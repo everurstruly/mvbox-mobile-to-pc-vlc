@@ -1,127 +1,130 @@
-from PySide6 import QtWidgets, QtCore, QtGui
+from PySide6 import QtWidgets, QtCore
 import pythoncom
 
+# ── High-Density Folder Picker ──────────────────────────────────────────────
 class MtpFolderPickerDialog(QtWidgets.QDialog):
-    def __init__(self, parent, device_name, config):
+    def __init__(self, parent, device_name, device_id, config):
         super().__init__(parent)
         self.device_name = device_name
+        self.device_id = device_id
         self.config = config
         self.selected_paths = []
-        self.current_stack = [] # list of folder names
+        self.current_stack = []
+
+        self.setWindowTitle("Choose Folders")
+        self.setMinimumSize(540, 560)
+        self.setStyleSheet(parent.styleSheet())
+
+        root = QtWidgets.QVBoxLayout(self); root.setContentsMargins(24, 24, 24, 24); root.setSpacing(16)
+
+        # Header: Breadcrumbs
+        self.breadcrumb = QtWidgets.QLabel(device_name); self.breadcrumb.setObjectName("section_t"); root.addWidget(self.breadcrumb)
         
-        self.setWindowTitle("Select Folders to Scan")
-        self.resize(500, 600)
-        self.setStyleSheet(parent.styleSheet() + """
-            QDialog { background-color: #0e0e0e; }
-            QListWidget { 
-                background-color: #131313; 
-                border-radius: 12px; 
-                border: 1px solid rgba(255,255,255,0.05); 
-                padding: 10px;
-                color: white; 
-                font-size: 14px;
-            }
-            QListWidget::item { padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.03); }
-            QListWidget::item:selected { background-color: #20201f; color: #c59aff; }
-        """)
-        
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(30, 30, 30, 30)
-        layout.setSpacing(20)
-        
-        self.breadcrumb = QtWidgets.QLabel(f"Device: {device_name}")
-        self.breadcrumb.setStyleSheet("color: #888; font-weight: bold; font-size: 12px;")
-        layout.addWidget(self.breadcrumb)
-        
-        title = QtWidgets.QLabel("Browse Device")
-        title.setObjectName("title")
-        title.setStyleSheet("font-size: 24px; font-weight: 800;")
-        layout.addWidget(title)
-        
+        # High-Density Folder List
         self.list_widget = QtWidgets.QListWidget()
-        self.list_widget.itemDoubleClicked.connect(self.drill_down)
-        layout.addWidget(self.list_widget)
-        
-        btn_layout = QtWidgets.QHBoxLayout()
-        self.back_btn = QtWidgets.QPushButton("Back")
-        self.back_btn.setObjectName("secondary")
-        self.back_btn.clicked.connect(self.drill_up)
-        
-        self.add_btn = QtWidgets.QPushButton("Select Current Folder")
-        self.add_btn.setObjectName("secondary")
-        self.add_btn.clicked.connect(self.select_current)
-        
-        btn_layout.addWidget(self.back_btn)
-        btn_layout.addWidget(self.add_btn)
-        layout.addLayout(btn_layout)
-        
-        self.selection_label = QtWidgets.QLabel("No folders selected")
-        self.selection_label.setStyleSheet("color: #c59aff; font-size: 12px;")
-        self.selection_label.setWordWrap(True)
-        layout.addWidget(self.selection_label)
-        
-        final_layout = QtWidgets.QHBoxLayout()
-        cancel_btn = QtWidgets.QPushButton("Cancel")
-        cancel_btn.setObjectName("secondary")
-        cancel_btn.clicked.connect(self.reject)
-        
-        self.confirm_btn = QtWidgets.QPushButton("Confirm Selection")
-        self.confirm_btn.setObjectName("primary")
-        self.confirm_btn.clicked.connect(self.accept)
-        
-        final_layout.addWidget(cancel_btn)
-        final_layout.addWidget(self.confirm_btn)
-        layout.addLayout(final_layout)
-        
-        self.load_current_folder()
-        
-    def load_current_folder(self):
-        self.list_widget.clear()
-        pythoncom.CoInitialize()
+        self.list_widget.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                background-color: rgba(255,255,255,0.025);
+                border: 1px solid rgba(255,255,255,0.06);
+                border-radius: 12px; padding: 4px;
+            }
+            QListWidget::item {
+                padding: 6px 12px; border-radius: 6px; margin: 1px 0px;
+                color: rgba(255,255,255,0.8); border: 1px solid transparent;
+            }
+            QListWidget::item:hover { background-color: rgba(255,255,255,0.05); color: #FFF; }
+            QListWidget::item:selected { 
+                background-color: rgba(0, 122, 255, 0.22); 
+                border: 1px solid rgba(0, 122, 255, 0.4);
+                color: #FFF; font-weight: 600;
+            }
+            QListWidget::item:selected:hover { background-color: rgba(0, 122, 255, 0.3); }
+        """)
+        self.list_widget.itemDoubleClicked.connect(self._drill_down)
+        self.list_widget.itemSelectionChanged.connect(self._sync_selection_state)
+        root.addWidget(self.list_widget, 1)
+
+        # Status & Navigation
+        nav = QtWidgets.QHBoxLayout(); self.back_btn = QtWidgets.QPushButton("← Back"); self.back_btn.setObjectName("ghost"); self.back_btn.clicked.connect(self._drill_up); self.back_btn.setEnabled(False)
+        self.status_lbl = QtWidgets.QLabel(""); self.status_lbl.setObjectName("hero_sub"); self.status_lbl.setStyleSheet("font-size: 11px;")
+        nav.addWidget(self.back_btn); nav.addStretch(); nav.addWidget(self.status_lbl); root.addLayout(nav)
+
+        # Selected Area
+        sel_box = QtWidgets.QFrame(); sel_box.setObjectName("surfaceCard"); sel_box.setFixedHeight(100)
+        sl = QtWidgets.QVBoxLayout(sel_box); sl.setContentsMargins(16, 12, 16, 12); sl.setSpacing(8)
+        sl.addWidget(QtWidgets.QLabel("SELECTED FOLDERS", objectName="section_t"))
+        self.chips_area = QtWidgets.QScrollArea(); self.chips_area.setWidgetResizable(True); self.chips_w = QtWidgets.QWidget(); self.chips_flow = QtWidgets.QHBoxLayout(self.chips_w); self.chips_flow.setContentsMargins(0, 0, 0, 0); self.chips_flow.setSpacing(6); self.chips_area.setWidget(self.chips_w)
+        sl.addWidget(self.chips_area)
+        root.addWidget(sel_box)
+
+        # Action row
+        actions = QtWidgets.QHBoxLayout(); actions.setSpacing(12)
+        self.add_btn = QtWidgets.QPushButton("Add Selection"); self.add_btn.setObjectName("secondary"); self.add_btn.setFixedHeight(40); self.add_btn.clicked.connect(self._add_selected); self.add_btn.setEnabled(False)
+        cancel_btn = QtWidgets.QPushButton("Cancel"); cancel_btn.setObjectName("ghost"); cancel_btn.clicked.connect(self.reject)
+        self.confirm_btn = QtWidgets.QPushButton("Use Selected  →"); self.confirm_btn.setObjectName("primary"); self.confirm_btn.setFixedHeight(44); self.confirm_btn.setEnabled(False); self.confirm_btn.clicked.connect(self._confirm_selection)
+        actions.addWidget(self.add_btn); actions.addStretch(); actions.addWidget(cancel_btn); actions.addWidget(self.confirm_btn)
+        root.addLayout(actions)
+
+        self._load_folder()
+        self._refresh_chips()
+
+    def _load_folder(self):
+        self.list_widget.clear(); pythoncom.CoInitialize()
         try:
             from ..devices.mtp_client import get_device_root, get_mtp_subfolder
-            root_item = get_device_root(self.device_name)
-            if not root_item: return
-            
-            path_str = "/".join(self.current_stack)
-            target = get_mtp_subfolder(root_item.GetFolder, path_str)
-            
+            root_item = get_device_root(self.device_id)
+            if not root_item: self.status_lbl.setText("Phone not responding."); return
+            path_str = "/".join(self.current_stack); target = get_mtp_subfolder(root_item.GetFolder, path_str)
             if target:
                 items = target.Items()
-                folder_names = []
-                for i in items:
-                    if i.IsFolder: folder_names.append(i.Name)
-                
-                folder_names.sort(key=str.lower)
-                for name in folder_names:
-                    item_widget = QtWidgets.QListWidgetItem("📁 " + name)
-                    item_widget.setData(QtCore.Qt.UserRole, name)
-                    self.list_widget.addItem(item_widget)
-            
-            self.breadcrumb.setText(" > ".join([self.device_name] + self.current_stack))
-            self.back_btn.setEnabled(len(self.current_stack) > 0)
-        finally:
-            pythoncom.CoUninitialize()
-            
-    def drill_down(self, item):
-        folder_name = item.data(QtCore.Qt.UserRole)
-        self.current_stack.append(folder_name)
-        self.load_current_folder()
-        
-    def drill_up(self):
-        if self.current_stack:
-            self.current_stack.pop()
-            self.load_current_folder()
-            
-    def select_current(self):
-        path = "/".join(self.current_stack)
-        if not path: return
-        if path not in self.selected_paths:
-            self.selected_paths.append(path)
-            self.update_selection_label()
-            
-    def update_selection_label(self):
-        if not self.selected_paths:
-            self.selection_label.setText("No folders selected")
+                names = sorted([i.Name for i in items if i.IsFolder], key=str.lower)
+                for name in names:
+                    li = QtWidgets.QListWidgetItem(f"📁  {name}"); li.setData(QtCore.Qt.ItemDataRole.UserRole, name); self.list_widget.addItem(li)
+                self.status_lbl.setText(f"{self.list_widget.count()} folders found")
+            else: self.status_lbl.setText("Empty folder.")
+            self.breadcrumb.setText(" › ".join([self.device_name] + self.current_stack))
+            self.back_btn.setEnabled(bool(self.current_stack))
+            self._sync_selection_state()
+        finally: pythoncom.CoUninitialize()
+
+    def _drill_down(self, item): self.current_stack.append(item.data(QtCore.Qt.ItemDataRole.UserRole)); self._load_folder()
+    def _drill_up(self):
+        if self.current_stack: self.current_stack.pop(); self._load_folder()
+
+    def _add_selected(self):
+        items = self.list_widget.selectedItems()
+        for i in items: self._register_path("/".join(self.current_stack + [i.data(QtCore.Qt.ItemDataRole.UserRole)]))
+        self._sync_selection_state()
+
+    def _confirm_selection(self):
+        if self.list_widget.selectedItems():
+            self._add_selected()
+        if self.selected_paths:
+            self.accept()
+
+    def _register_path(self, path):
+        if path not in self.selected_paths: self.selected_paths.append(path); self._refresh_chips()
+
+    def _refresh_chips(self):
+        while self.chips_flow.count():
+            w = self.chips_flow.takeAt(0).widget()
+            if w: w.setParent(None)
+        if not self.selected_paths: self.chips_flow.addWidget(QtWidgets.QLabel("Pick folders above, then confirm.", objectName="hero_sub"))
         else:
-            self.selection_label.setText("Selected: " + ", ".join(self.selected_paths))
+            for path in list(self.selected_paths):
+                chip = QtWidgets.QPushButton(f"📁 {path.split('/')[-1]}  ✕"); chip.setObjectName("ghost"); chip.setFixedHeight(28); chip.clicked.connect(lambda _, p=path: self._remove_path(p)); self.chips_flow.addWidget(chip)
+        self.confirm_btn.setEnabled(bool(self.selected_paths) or bool(self.list_widget.selectedItems()))
+
+    def _remove_path(self, path):
+        if path in self.selected_paths: self.selected_paths.remove(path)
+        self._refresh_chips()
+
+    def _sync_selection_state(self):
+        selected_now = len(self.list_widget.selectedItems())
+        if selected_now:
+            self.status_lbl.setText(f"{self.list_widget.count()} folders found • {selected_now} selected")
+        elif self.list_widget.count():
+            self.status_lbl.setText(f"{self.list_widget.count()} folders found")
+        self.add_btn.setEnabled(selected_now > 0)
+        self.confirm_btn.setEnabled(bool(self.selected_paths) or selected_now > 0)

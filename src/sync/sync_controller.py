@@ -35,6 +35,8 @@ def wait_for_copy_to_finish(
     existing_names = existing_names or set()
     expected_stem = Path(expected_name).stem.lower()
     expected_ext = Path(expected_name).suffix.lower()
+    last_wait_notice = 0.0
+    last_lock_notice = 0.0
 
     def choose_candidate() -> Path | None:
         candidates = [item for item in stage_dir.iterdir() if item.name not in existing_names]
@@ -64,37 +66,82 @@ def wait_for_copy_to_finish(
         filepath = choose_candidate()
         if filepath:
             break
+        progress_callback("__FILE_PROGRESS__:PULSE")
+        if time.time() - last_wait_notice >= 2.0:
+            progress_callback(f"__TRANSFER_STATE__:Waiting for Windows to start copying {expected_name}")
+            last_wait_notice = time.time()
         time.sleep(0.2)
         
     if not filepath:
         return None
         
     # Poll file size and wait for the write lock to release
+    last_known_size = -1
+    stable_ticks = 0
+
     while time.time() - start < timeout:
         if should_abort and should_abort():
             return None
+
         filepath = choose_candidate() or filepath
-        try:
-            # Try to grab current size for progress
-            curr_size = filepath.stat().st_size
-            if source_size > 0:
-                pct = min(99, int((curr_size / source_size) * 100))
-                progress_callback(f"__FILE_PROGRESS__:{pct}")
-            else:
-                # If we couldn't get source size, just pulse the UI
-                progress_callback("__FILE_PROGRESS__:PULSE")
-        except Exception:
-            pass
 
         try:
-            with open(filepath, 'a'):
+            curr_size = filepath.stat().st_size
+        except Exception:
+            time.sleep(0.5)
+            continue
+
+        # Progress display
+        if source_size > 0:
+            pct = min(99, int((curr_size / source_size) * 100))
+            progress_callback(f"__FILE_PROGRESS__:{pct}")
+        else:
+            progress_callback("__FILE_PROGRESS__:PULSE")
+
+        # Gate 1: size must reach source size before we even try the lock.
+        # This is the primary fix — the old code skipped this gate entirely.
+        if source_size > 0 and curr_size < source_size:
+            if time.time() - last_lock_notice >= 2.0:
+                progress_callback(
+                    f"__TRANSFER_STATE__:Receiving {filepath.name} "
+                    f"({curr_size // (1024 * 1024)} MB / {source_size // (1024 * 1024)} MB)"
+                )
+                last_lock_notice = time.time()
+            last_known_size = curr_size
+            stable_ticks = 0
+            time.sleep(0.5)
+            continue
+
+        # Gate 2: size must be stable for 4 consecutive polls (2 seconds).
+        # Fallback for devices where source_item.Size returns 0 or -1.
+        if curr_size == last_known_size:
+            stable_ticks += 1
+        else:
+            stable_ticks = 0
+            last_known_size = curr_size
+
+        if stable_ticks < 4:
+            time.sleep(0.5)
+            continue
+
+        # Gate 3: try to open with read+write access.
+        # 'r+b' maps to GENERIC_READ|GENERIC_WRITE on Windows, which is
+        # genuinely exclusive. The old 'a' mode used FILE_SHARE_WRITE and
+        # succeeded even while the MTP driver was still writing chunks.
+        try:
+            with open(filepath, 'r+b'):
                 pass
             time.sleep(0.5)
             progress_callback("__FILE_PROGRESS__:100")
             return filepath
         except (IOError, PermissionError):
+            stable_ticks = 0
+            if time.time() - last_lock_notice >= 2.0:
+                progress_callback(f"__TRANSFER_STATE__:Waiting for file access: {filepath.name}")
+                progress_callback("__TRANSFER_HINT__:If Windows opened a copy dialog, resolve it to continue.")
+                last_lock_notice = time.time()
             time.sleep(0.5)
-            
+
     return None
 
 def move_unique(source: Path, target: Path) -> Path:
@@ -124,9 +171,10 @@ class ScanWorker(QtCore.QThread):
         self.target_paths = target_paths or []
         self._is_aborted = False
         self._use_partial = False
+        self.videos = []; self.subtitles = [] # Persist state for Review
         import threading
         self._pause_event = threading.Event()
-        self._pause_event.set()  # start in running state
+        self._pause_event.set()
 
     def pause(self):
         """Pause the scan at the next checkpoint in the walk loop."""
@@ -139,7 +187,7 @@ class ScanWorker(QtCore.QThread):
     def abort(self, use_partial: bool = False):
         self._use_partial = use_partial
         self._is_aborted = True
-        self._pause_event.set()  # unblock if currently paused so run() can exit cleanly
+        self._pause_event.set() 
 
     def _check_abort(self) -> bool:
         """Called inside scan loop. Blocks here when paused, returns True when aborted."""
@@ -149,7 +197,7 @@ class ScanWorker(QtCore.QThread):
     def run(self):
         try:
             if self.mode == "mtp":
-                videos, subtitles = scan_mtp(
+                self.videos, self.subtitles = scan_mtp(
                     self.root_identifier,
                     self.config,
                     self.progress.emit,
@@ -157,20 +205,16 @@ class ScanWorker(QtCore.QThread):
                     should_abort=self._check_abort,
                 )
             else:
-                videos, subtitles = scan_local(
+                self.videos, self.subtitles = scan_local(
                     Path(self.root_identifier),
                     self.config,
                     self.progress.emit,
                     should_abort=self._check_abort,
                 )
-            if self._is_aborted:
-                if self._use_partial:
-                    self.progress.emit(f"Partial scan: {len(videos)} video(s) found.")
-                    self.finished.emit(videos, subtitles)
-                else:
-                    self.failed.emit("Scan cancelled.")
+            if self._is_aborted and not self._use_partial:
+                self.failed.emit("Scan cancelled.")
                 return
-            self.finished.emit(videos, subtitles)
+            self.finished.emit(self.videos, self.subtitles)
         except Exception as exc:
             import traceback
             traceback.print_exc()
@@ -180,6 +224,7 @@ class SyncWorker(QThread):
     progress = Signal(str)
     finished = Signal()
     failed = Signal(str)
+    cancelled = Signal()
 
     def __init__(self, items: list, config: dict):
         super().__init__()
@@ -205,8 +250,8 @@ class SyncWorker(QThread):
             
             for idx, item in enumerate(items, start=1):
                 if self._is_aborted:
-                    self.progress.emit("Operation cancelled by user.")
-                    self.failed.emit("Sync cancelled.")
+                    self.progress.emit("Import stopped by user.")
+                    self.cancelled.emit()
                     return
                 
                 self.progress.emit(f"[{idx}/{total}] Processing: {item['media'].destination_base}")
@@ -271,6 +316,7 @@ class SyncWorker(QThread):
         existing_names = {item.name for item in stage_dir.iterdir()}
         
         self.progress.emit(f"Awaiting MTP transfer: {entry['name']}")
+        self.progress.emit("__TRANSFER_HINT__:If Windows shows a duplicate or copy dialog, resolve it there to continue.")
         dest_folder.CopyHere(source_item, 16) # 16 = Yes to All
         
         try:

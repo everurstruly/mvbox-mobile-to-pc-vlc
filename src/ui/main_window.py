@@ -1,660 +1,479 @@
 import os
-import subprocess
 import time
-from pathlib import Path
+import ctypes
 from PySide6 import QtWidgets, QtCore, QtGui
-import win32com.client  # type: ignore
-import pythoncom
 
-from ..core.config_manager import load_config, save_config
+from ..core.config_manager import load_config
 from ..core.transfer_planner import build_transfer_plan
 from ..devices.mtp_client import get_devices
 from ..sync.sync_controller import ScanWorker, SyncWorker
+from .components import LibraryGrid, LibraryHeader
 
-# ── Obsidian Air: Apple-Inspired Micro-Design ──────────────────────────────────
-OBSIDIAN_QSS = """
-QMainWindow {
-    background-color: #050505;
-}
-QWidget {
-    font-family: 'Inter', 'Segoe UI Variable', 'Segoe UI', sans-serif;
-    color: #FFFFFF;
-}
-#main_canvas {
-    background: qradialgradient(cx:0.5, cy:0.2, radius:0.8, fx:0.5, fy:0.2,
-        stop:0 rgba(50, 50, 90, 0.15), stop:1 rgba(5, 5, 5, 1));
-}
-#surfaceCard {
-    background-color: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 20px;
-}
-#surfaceLow {
-    background-color: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.04);
-}
+# ── Obsidian Core: Approved Final Architecture ──────────────────────────────
+MASTER_QSS = """
+QMainWindow { background-color: #020202; }
+QWidget { font-family: 'Inter', 'Segoe UI Variable', sans-serif; color: #FFFFFF; }
+#main_canvas { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #050818, stop:1 #020202); }
 
-/* Typography */
-#title { font-size: 26px; font-weight: 800; letter-spacing: -0.8px; }
-#subtitle { font-size: 14px; color: rgba(255, 255, 255, 0.4); line-height: 1.5; }
-#phase_lbl { font-size: 10px; font-weight: 900; letter-spacing: 2px; color: #007AFF; }
-#stats_text { font-size: 12px; color: rgba(255, 255, 255, 0.3); font-weight: 600; }
+#navbar { border-bottom: 1px solid rgba(255, 255, 255, 0.05); background: rgba(0,0,0,0.2); }
+#app_logo { font-size: 16px; font-weight: 900; color: #FFF; letter-spacing: -0.5px; }
 
-/* Stepper */
-#step_dot { color: rgba(255, 255, 255, 0.1); font-size: 14px; padding: 0 4px; }
-#step_text { font-size: 11px; font-weight: 800; color: rgba(255, 255, 255, 0.2); letter-spacing: 1px; }
-#step_text[active="true"] { color: #007AFF; }
+#step_dot { background-color: rgba(255, 255, 255, 0.1); border-radius: 4px; border: none; }
+#step_dot[active="true"] { background-color: #007AFF; }
 
-/* Buttons */
-QPushButton { border-radius: 12px; font-weight: 700; font-size: 13px; padding: 12px 24px; }
-QPushButton#primary { 
-    background-color: #007AFF; color: white; border: none; 
-}
-QPushButton#primary:hover { background-color: #0084FF; }
-QPushButton#primary:disabled { background-color: #1a1a1a; color: #444; }
+/* ── Typography ── */
+#hero_title { font-size: 48px; font-weight: 800; letter-spacing: -2px; color: #FFF; }
+#hero_sub { font-size: 16px; color: rgba(255, 255, 255, 0.4); }
+#section_t { font-size: 10px; font-weight: 900; color: rgba(255, 255, 255, 0.3); letter-spacing: 2px; text-transform: uppercase; }
 
-QPushButton#secondary { 
-    background-color: rgba(255, 255, 255, 0.06); 
-    border: 1px solid rgba(255, 255, 255, 0.1); 
+/* ── Buttons ── */
+QPushButton#primary {
+    background-color: #007AFF; color: white; border-radius: 14px;
+    font-weight: 800; font-size: 15px; padding: 16px 42px; border: none;
 }
-QPushButton#secondary:hover { background-color: rgba(255, 255, 255, 0.1); }
+QPushButton#primary:hover { background-color: #1a8aff; }
+QPushButton#primary:disabled { background-color: #111; color: #333; }
 
-/* Card Style */
-#MediaCard { background-color: rgba(255, 255, 255, 0.03); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.05); }
-#MediaCard[selected="true"] { background-color: rgba(0, 122, 255, 0.08); border: 2px solid #007AFF; }
+QPushButton#secondary {
+    background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px; color: #EEE; padding: 12px 28px; font-weight: 700;
+}
+QPushButton#utility { color: rgba(255, 255, 255, 0.3); font-size: 12px; font-weight: 700; background: transparent; border: none; }
+QPushButton#utility:hover { color: #FFF; }
 
-/* Progress Bar */
-QProgressBar { background: rgba(255,255,255,0.05); border-radius: 3px; height: 3px; border: none; }
-QProgressBar::chunk { background: #007AFF; border-radius: 3px; }
+QPushButton#ghost { background-color: transparent; border: none; color: rgba(255,255,255,0.4); font-size: 13px; font-weight: 700; }
+QPushButton#ghost:hover { color: #FFF; }
 
-QComboBox { 
-    background-color: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 12px;
-    padding: 12px 18px;
-    font-size: 14px;
-    color: white;
+QPushButton#filter_tab {
+    background-color: transparent; border-radius: 10px;
+    color: rgba(255, 255, 255, 0.4); font-size: 12px; font-weight: 700; padding: 10px 20px;
 }
-QComboBox:hover {
-    background-color: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.15);
+QPushButton#filter_tab[active="true"] { background-color: rgba(0, 122, 255, 0.12); color: #007AFF; border: 1px solid rgba(0,122,255,0.25); }
+QPushButton#back_inline {
+    background: transparent; border: none; color: rgba(255,255,255,0.75);
+    font-size: 14px; font-weight: 700; padding: 8px 12px;
 }
-QComboBox::drop-down { border: none; width: 30px; }
-QComboBox::down-arrow {
-    image: none;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 5px solid rgba(255, 255, 255, 0.3);
-    margin-right: 12px;
-}
-QComboBox QAbstractItemView {
-    background-color: #121212;
-    border: 1px solid #222;
-    border-radius: 10px;
-    selection-background-color: #007AFF;
-    outline: 0px;
-}
+QPushButton#back_inline:hover { color: #FFF; }
 
-QScrollArea { background: transparent; border: none; }
-QScrollBar:vertical {
-    background: transparent; width: 6px;
-}
-QScrollBar::handle:vertical {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 3px;
-}
+/* ── Media Card ── */
+#MediaCard { background-color: rgba(255, 255, 255, 0.04); border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.08); }
+#MediaCard[selected="true"] { border: 2.5px solid #007AFF; background-color: rgba(0, 122, 255, 0.1); }
+
+QComboBox { background-color: rgba(0,0,0,0.3); border: 1px solid #222; border-radius: 14px; padding: 14px 20px; font-size: 15px; color: #FFF; }
+QProgressBar { background: rgba(255,255,255,0.04); border-radius: 2px; height: 3px; border: none; }
+QProgressBar::chunk { background: #007AFF; border-radius: 2px; }
+
+#surfaceCard { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 24px; }
+#library_header { border-bottom: 1px solid rgba(255,255,255,0.06); }
+
+QCheckBox { color: rgba(255,255,255,0.4); font-size: 13px; font-weight: 700; spacing: 8px; background: transparent; border: none; }
+QCheckBox:hover { color: #FFF; }
+QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; border: 1.5px solid rgba(255,255,255,0.2); background: transparent; }
+QCheckBox::indicator:checked { background: #007AFF; border-color: #007AFF; image: none; }
+QCheckBox::indicator:indeterminate { background: rgba(0,122,255,0.35); border-color: #007AFF; }
+QCheckBox::indicator:hover { border-color: rgba(255,255,255,0.5); }
 """
 
-class MediaCard(QtWidgets.QFrame):
-    def __init__(self, item_data):
-        super().__init__()
-        self.setObjectName("MediaCard")
-        self.setFixedSize(240, 200)
-        self.item_data = item_data
-        self._selected = True
-        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        # 1. Image Canvas
-        self.thumb_container = QtWidgets.QFrame()
-        self.thumb_container.setFixedHeight(120)
-        self.thumb_container.setStyleSheet("background: #0D0D0D; border-top-left-radius: 16px; border-top-right-radius: 16px;")
-        t_layout = QtWidgets.QVBoxLayout(self.thumb_container)
-        
-        # Icon/Thumbnail
-        self.thumbnail_lbl = QtWidgets.QLabel("🎬" if item_data['media'].type == "movie" else "📺")
-        self.thumbnail_lbl.setStyleSheet("font-size: 40px;")
-        self.thumbnail_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        t_layout.addWidget(self.thumbnail_lbl)
-        
-        # 2. Metadata Pane
-        self.info_pane = QtWidgets.QWidget()
-        i_layout = QtWidgets.QVBoxLayout(self.info_pane)
-        i_layout.setContentsMargins(16, 12, 16, 16)
-        
-        self.title_lbl = QtWidgets.QLabel(item_data['media'].title)
-        self.title_lbl.setStyleSheet("font-weight: 800; font-size: 14px; color: #EEE;")
-        self.title_lbl.setWordWrap(True)
-        
-        meta = item_data['media'].type.upper()
-        if item_data['media'].type == "episode":
-            meta = f"SERIES • S{item_data['media'].season:02d}E{item_data['media'].episode:02d}"
-        
-        self.meta_lbl = QtWidgets.QLabel(meta)
-        self.meta_lbl.setStyleSheet("color: #007AFF; font-weight: 900; font-size: 9px; letter-spacing: 1.5px;")
-        
-        i_layout.addWidget(self.meta_lbl)
-        i_layout.addWidget(self.title_lbl)
-        i_layout.addStretch()
-        
-        layout.addWidget(self.thumb_container)
-        layout.addWidget(self.info_pane)
-        self.update_style()
-
-    def mousePressEvent(self, event):
-        self._selected = not self._selected
-        self.update_style()
-        # Notify main window
-        parent = self.window()
-        if hasattr(parent, 'refresh_summary'):
-            parent.refresh_summary()
-
-    def set_thumbnail(self, pixmap):
-        self.thumbnail_lbl.setPixmap(pixmap.scaled(self.thumb_container.size(), 
-            QtCore.Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
-            QtCore.Qt.TransformationMode.SmoothTransformation))
-        self.thumbnail_lbl.setText("")
-
-    def is_selected(self): return self._selected
-    
-    def update_style(self):
-        self.setProperty("selected", self._selected)
-        self.style().unpolish(self)
-        self.style().polish(self)
+PAGE_MARGIN_X = 32
+SURFACE_INNER_X = 28
+LIBRARY_SECTION_GAP = 16
 
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MovieBox Sync")
-        self.setFixedSize(840, 580)
-        self.config = load_config()
-        self.setStyleSheet(OBSIDIAN_QSS)
         
-        self.scan_worker = None
-        self.sync_worker = None
-        self.cards = []
-        self.target_paths = []
-        self.setup_ui()
-        
-    def setup_ui(self):
-        container = QtWidgets.QWidget()
-        container.setObjectName("main_canvas")
-        self.setCentralWidget(container)
-        self.root_layout = QtWidgets.QVBoxLayout(container)
-        self.root_layout.setContentsMargins(0, 0, 0, 0)
-        self.root_layout.setSpacing(0)
-        
-        self.navbar = QtWidgets.QFrame()
-        self.navbar.setFixedHeight(64)
-        nav_layout = QtWidgets.QHBoxLayout(self.navbar)
-        nav_layout.setContentsMargins(40, 0, 40, 0)
-        
-        self.step_widgets = []
-        steps = ["CONNECT", "SCAN", "LIBRARY", "IMPORT"]
-        for i, s in enumerate(steps):
-            lbl = QtWidgets.QLabel(s)
-            lbl.setObjectName("step_text")
-            lbl.setProperty("active", i == 0)
-            self.step_widgets.append(lbl)
-            nav_layout.addWidget(lbl)
-            if i < len(steps) - 1:
-                dot = QtWidgets.QLabel("•")
-                dot.setObjectName("step_dot")
-                nav_layout.addWidget(dot)
-        nav_layout.addStretch()
-        
-        self.stacked_widget = QtWidgets.QStackedWidget()
-        self.setup_connect_page()
-        self.setup_syncing_page()
-        self.setup_library_page()
-        self.setup_celebration_page()
-        
-        self.root_layout.addWidget(self.navbar)
-        self.root_layout.addWidget(self.stacked_widget)
-        self.set_current_step(0, 1)
+        # Windows Taskbar Icon Fix (AppUserModelID)
+        try:
+            myappid = u'moviebox.sync.desktop.v2'
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except Exception:
+            pass
 
-    def set_current_step(self, page_idx, step_idx):
-        self.stacked_widget.setCurrentIndex(page_idx)
-        for i, lbl in enumerate(self.step_widgets):
-            lbl.setProperty("active", i == (step_idx - 1))
-            lbl.style().unpolish(lbl)
-            lbl.style().polish(lbl)
+        self.setWindowTitle("MovieBox Sync"); self.setMinimumSize(500, 500); self.resize(960, 680)
+        
+        # Set Branding Icon
+        icon_path = os.path.join(os.path.dirname(__file__), "assets", "logo.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QtGui.QIcon(icon_path))
+            
+        self.config = load_config(); self.setStyleSheet(MASTER_QSS)
+        self.target_paths = []; self._all_items = []; self._af = "All"
+        self._grid_reflow = QtCore.QTimer(self); self._grid_reflow.setSingleShot(True); self._grid_reflow.timeout.connect(self._reflow_library_grid)
+        self._build_ui()
 
-    def setup_connect_page(self):
-        page = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.setContentsMargins(80, 40, 80, 80)
+    def _build_ui(self):
+        root = QtWidgets.QWidget(); root.setObjectName("main_canvas")
+        self.setCentralWidget(root); layout = QtWidgets.QVBoxLayout(root); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(0)
+        self.navbar = QtWidgets.QFrame(); self.navbar.setObjectName("navbar"); self.navbar.setFixedHeight(72)
+        nl = QtWidgets.QHBoxLayout(self.navbar); nl.setContentsMargins(PAGE_MARGIN_X, 0, PAGE_MARGIN_X, 0)
         
-        header = QtWidgets.QVBoxLayout()
-        header.setSpacing(4)
-        t = QtWidgets.QLabel("Ready to Sync")
-        t.setObjectName("title")
-        s = QtWidgets.QLabel("Plug in your phone to begin transferring your library.")
-        s.setObjectName("subtitle")
-        header.addWidget(t)
-        header.addWidget(s)
-        
-        card = QtWidgets.QFrame()
-        card.setObjectName("surfaceCard")
-        card.setFixedWidth(520)
-        c_layout = QtWidgets.QVBoxLayout(card)
-        c_layout.setContentsMargins(40, 40, 40, 40)
-        c_layout.setSpacing(32)
-        
-        picker_v = QtWidgets.QVBoxLayout()
-        picker_v.setSpacing(12)
-        l = QtWidgets.QLabel("SELECT TARGET DEVICE")
-        l.setStyleSheet("font-size: 10px; font-weight: 900; color: rgba(255,255,255,0.3);")
-        self.device_combo = QtWidgets.QComboBox()
-        self.device_combo.setFixedHeight(48)
-        picker_v.addWidget(l)
-        picker_v.addWidget(self.device_combo)
-        
-        self.paths_lbl = QtWidgets.QLabel("")
-        self.paths_lbl.setObjectName("subtitle")
-        self.paths_lbl.setStyleSheet("font-size: 12px; font-style: italic;")
-        
-        actions = QtWidgets.QHBoxLayout()
-        self.scan_btn = QtWidgets.QPushButton("Start Magic Scan")
-        self.scan_btn.setObjectName("primary")
-        self.scan_btn.setFixedHeight(54)
-        self.scan_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        self.scan_btn.clicked.connect(self.start_scan_flow)
-        
-        self.browse_btn = QtWidgets.QPushButton("Custom Folder")
-        self.browse_btn.setObjectName("secondary")
-        self.browse_btn.setFixedHeight(54)
-        self.browse_btn.setFixedWidth(160)
-        self.browse_btn.clicked.connect(self.open_mtp_picker)
-        
-        actions.addWidget(self.scan_btn, 1)
-        actions.addWidget(self.browse_btn)
-        
-        c_layout.addLayout(picker_v)
-        c_layout.addWidget(self.paths_lbl)
-        c_layout.addLayout(actions)
-        
-        layout.addLayout(header)
-        layout.addWidget(card, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
-        layout.addStretch()
-        self.stacked_widget.addWidget(page)
-        self.refresh_devices()
+        # Brand Logo in Navbar
+        brand_w = QtWidgets.QWidget(); bl = QtWidgets.QHBoxLayout(brand_w); bl.setContentsMargins(0,0,0,0); bl.setSpacing(12)
+        logo_icon = QtWidgets.QLabel()
+        logo_pix = QtGui.QPixmap(os.path.join(os.path.dirname(__file__), "assets", "logo.png"))
+        if not logo_pix.isNull():
+            logo_icon.setPixmap(logo_pix.scaled(28, 28, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation))
+        bl.addWidget(logo_icon)
+        logo_text = QtWidgets.QLabel("MOVIEBOX SYNC"); logo_text.setObjectName("app_logo")
+        bl.addWidget(logo_text)
+        nl.addWidget(brand_w); nl.addStretch()
+        self._dots = []; dot_w = QtWidgets.QWidget(); dl = QtWidgets.QHBoxLayout(dot_w); dl.setSpacing(8)
+        for i in range(4):
+            d = QtWidgets.QFrame(); d.setObjectName("step_dot"); d.setFixedSize(8, 8); self._dots.append(d); dl.addWidget(d)
+        nl.addWidget(dot_w); nl.addStretch()
+        self.help_btn = QtWidgets.QPushButton("Support"); self.help_btn.setObjectName("utility"); nl.addWidget(self.help_btn); nl.addSpacing(20)
+        self.upd_btn = QtWidgets.QPushButton("Check for Updates"); self.upd_btn.setObjectName("utility"); nl.addWidget(self.upd_btn)
+        layout.addWidget(self.navbar)
+        self.stack = QtWidgets.QStackedWidget(); layout.addWidget(self.stack)
+        self.stack.addWidget(self._page_connect()); self.stack.addWidget(self._page_scanning()); self.stack.addWidget(self._page_library()); self.stack.addWidget(self._page_done())
+        self._go(0, 0)
 
-    def setup_syncing_page(self):
-        page = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        
-        card = QtWidgets.QFrame()
-        card.setObjectName("surfaceCard")
-        card.setFixedSize(540, 320)
-        c_layout = QtWidgets.QVBoxLayout(card)
-        c_layout.setContentsMargins(48, 48, 48, 48)
-        c_layout.setSpacing(12)
-        
-        self.sync_phase_lbl = QtWidgets.QLabel("INITIALIZING")
-        self.sync_phase_lbl.setObjectName("phase_lbl")
-        self.sync_phase_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        
-        self.sync_file_lbl = QtWidgets.QLabel("Searching...")
-        self.sync_file_lbl.setObjectName("title")
-        self.sync_file_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.sync_file_lbl.setWordWrap(True)
-        
-        self.sync_folder_lbl = QtWidgets.QLabel("")
-        self.sync_folder_lbl.setObjectName("subtitle")
-        self.sync_folder_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        
-        self.sync_bar = QtWidgets.QProgressBar()
-        self.sync_bar.setRange(0, 0)
-        
-        stats = QtWidgets.QHBoxLayout()
-        self.sync_timer_lbl = QtWidgets.QLabel("00:00")
-        self.sync_timer_lbl.setObjectName("stats_text")
-        self.sync_checked_lbl = QtWidgets.QLabel("0 items scanned")
-        self.sync_checked_lbl.setObjectName("stats_text")
-        self.sync_found_lbl = QtWidgets.QLabel("")
-        self.sync_found_lbl.setStyleSheet("color: #007AFF; font-weight: 800; font-size: 13px;")
-        
-        stats.addWidget(self.sync_timer_lbl)
-        stats.addWidget(self.sync_checked_lbl)
-        stats.addStretch()
-        stats.addWidget(self.sync_found_lbl)
-        
-        self.sync_pct = QtWidgets.QLabel("")
-        self.sync_pct.setObjectName("stats_text")
-        self.sync_pct.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+    def _go(self, p, s):
+        self.stack.setCurrentIndex(p)
+        for i, d in enumerate(self._dots): d.setProperty("active", i == s); d.style().unpolish(d); d.style().polish(d)
 
-        self.controls_stack = QtWidgets.QStackedWidget()
-        self.controls_stack.setFixedHeight(80)
-        
-        stop_page = QtWidgets.QWidget()
-        stop_l = QtWidgets.QHBoxLayout(stop_page)
-        self._stop_btn = QtWidgets.QPushButton("■  Stop Scan")
-        self._stop_btn.setObjectName("secondary")
-        self._stop_btn.setFixedWidth(160)
-        self._stop_btn.clicked.connect(self._on_stop_pressed)
-        stop_l.addWidget(self._stop_btn, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
-        
-        options_page = QtWidgets.QWidget()
-        opt_l = QtWidgets.QHBoxLayout(options_page)
-        opt_l.setSpacing(12)
-        self._resume_btn = QtWidgets.QPushButton("Resume")
-        self._resume_btn.setObjectName("secondary")
-        self._resume_btn.setFixedWidth(140)
-        self._resume_btn.clicked.connect(self._resume_scan)
-        self._partial_btn = QtWidgets.QPushButton("Use Partial Results")
-        self._partial_btn.setObjectName("primary")
-        self._partial_btn.setFixedWidth(180)
-        self._partial_btn.clicked.connect(self._use_partial_scan)
-        opt_l.addWidget(self._resume_btn)
-        opt_l.addWidget(self._partial_btn)
-        
-        self.controls_stack.addWidget(stop_page)
-        self.controls_stack.addWidget(options_page)
-        
-        c_layout.addWidget(self.sync_phase_lbl)
-        c_layout.addWidget(self.sync_file_lbl)
-        c_layout.addWidget(self.sync_folder_lbl)
-        c_layout.addSpacing(16)
-        c_layout.addWidget(self.sync_bar)
-        c_layout.addLayout(stats)
-        c_layout.addWidget(self.sync_pct)
-        c_layout.addStretch()
-        c_layout.addWidget(self.controls_stack)
-        
-        layout.addWidget(card)
-        self.stacked_widget.addWidget(page)
-        
-        self._live_timer = QtCore.QTimer()
-        self._live_timer.setInterval(1000)
-        self._live_timer.timeout.connect(self._on_live_tick)
-        self._scan_start_time = None
+    def _return_to_setup(self):
+        self._go(0, 0)
 
-    def setup_library_page(self):
-        page = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.setContentsMargins(40, 20, 40, 40)
-        
-        header = QtWidgets.QHBoxLayout()
-        title_v = QtWidgets.QVBoxLayout()
-        t = QtWidgets.QLabel("Library")
-        t.setObjectName("title")
-        s = QtWidgets.QLabel("Organized collection found on your device.")
-        s.setObjectName("subtitle")
-        title_v.addWidget(t)
-        title_v.addWidget(s)
-        header.addLayout(title_v)
-        header.addStretch()
-        
-        self.scroll_area = QtWidgets.QScrollArea()
-        self.scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.grid_container = QtWidgets.QWidget()
-        self.grid_layout = QtWidgets.QGridLayout(self.grid_container)
-        self.grid_layout.setSpacing(20)
-        self.grid_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.scroll_area.setWidget(self.grid_container)
-        self.scroll_area.setWidgetResizable(True)
-        
-        self.empty_state = QtWidgets.QLabel("Nothing Found")
-        self.empty_state.setObjectName("title")
-        self.empty_state.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.empty_state.hide()
-        
-        footer = QtWidgets.QHBoxLayout()
-        self.summary_lbl = QtWidgets.QLabel("0 Items Selected")
-        self.summary_lbl.setStyleSheet("font-weight: 800; font-size: 15px;")
-        
-        self.import_btn = QtWidgets.QPushButton("Sync Library")
-        self.import_btn.setObjectName("primary")
-        self.import_btn.setFixedWidth(200)
-        self.import_btn.clicked.connect(self.start_sync_flow)
-        
-        footer.addWidget(self.summary_lbl)
-        footer.addStretch()
-        footer.addWidget(self.import_btn)
-        
-        layout.addLayout(header)
-        layout.addSpacing(24)
-        layout.addWidget(self.scroll_area)
-        layout.addWidget(self.empty_state)
-        layout.addSpacing(24)
-        layout.addLayout(footer)
-        self.stacked_widget.addWidget(page)
+    def _page_connect(self):
+        page = QtWidgets.QWidget(); l = QtWidgets.QVBoxLayout(page); l.setContentsMargins(PAGE_MARGIN_X, 48, PAGE_MARGIN_X, 64); l.setSpacing(40)
+        header = QtWidgets.QVBoxLayout(); header.setSpacing(8); header.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        t = QtWidgets.QLabel("Ready to Sync."); t.setObjectName("hero_title"); t.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter); s = QtWidgets.QLabel("Plug in your phone to find your videos."); s.setObjectName("hero_sub"); s.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter); header.addWidget(t); header.addWidget(s)
+        container = QtWidgets.QFrame(); container.setObjectName("surfaceCard"); container.setFixedWidth(540)
+        cl = QtWidgets.QVBoxLayout(container); cl.setContentsMargins(SURFACE_INNER_X, 48, SURFACE_INNER_X, 48); cl.setSpacing(0)
+        chosen_phone_lbl = QtWidgets.QLabel("CHOSEN PHONE"); chosen_phone_lbl.setObjectName("section_t"); cl.addWidget(chosen_phone_lbl); cl.addSpacing(12)
+        self.device_combo = QtWidgets.QComboBox(); self.device_combo.setFixedHeight(56); cl.addWidget(self.device_combo)
+        only_folders_lbl = QtWidgets.QLabel("ONLY THESE FOLDERS (OPTIONAL)"); only_folders_lbl.setObjectName("section_t"); cl.addSpacing(64); cl.addWidget(only_folders_lbl); cl.addSpacing(12)
+        self.add_b = QtWidgets.QPushButton("+ Add Folders"); self.add_b.setObjectName("ghost"); self.add_b.setFixedHeight(40); self.add_b.clicked.connect(self._open_picker); cl.addWidget(self.add_b, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.tags_l = QtWidgets.QHBoxLayout(); self.tags_l.setSpacing(8); self.tags_l.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft); self.tags_w = QtWidgets.QWidget(); self.tags_w.setLayout(self.tags_l); self.tags_sc = QtWidgets.QScrollArea(); self.tags_sc.setWidget(self.tags_w); self.tags_sc.setWidgetResizable(True); self.tags_sc.setFixedHeight(48); cl.addWidget(self.tags_sc); self.tags_sc.setVisible(False)
+        cl.addSpacing(32); self.scan_btn = QtWidgets.QPushButton("Look for All Videos  →"); self.scan_btn.setObjectName("primary"); self.scan_btn.setFixedHeight(60); self.scan_btn.clicked.connect(self._start_scan)
+        cl.addWidget(self.scan_btn); l.addLayout(header); body_l = QtWidgets.QHBoxLayout(); body_l.addStretch(); body_l.addWidget(container); body_l.addStretch(); l.addLayout(body_l); l.addStretch(); self.refresh_devices(); return page
 
-    def setup_celebration_page(self):
-        page = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+    def _page_scanning(self):
+        page = QtWidgets.QWidget(); l = QtWidgets.QVBoxLayout(page); l.setContentsMargins(80, 80, 80, 80); l.setSpacing(24); l.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self._scan_title = QtWidgets.QLabel("Finding your videos..."); self._scan_title.setObjectName("hero_title"); self._scan_title.setStyleSheet("font-size: 32px;"); self._scan_title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter); l.addWidget(self._scan_title)
+        container = QtWidgets.QFrame(); container.setObjectName("surfaceCard"); container.setFixedWidth(540)
+        cl = QtWidgets.QVBoxLayout(container); cl.setContentsMargins(SURFACE_INNER_X, 48, SURFACE_INNER_X, 48); cl.setSpacing(32)
         
-        card = QtWidgets.QFrame()
-        card.setObjectName("surfaceCard")
-        card.setFixedSize(460, 380)
-        c_layout = QtWidgets.QVBoxLayout(card)
-        c_layout.setContentsMargins(48, 48, 48, 48)
-        c_layout.setSpacing(24)
-        c_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        # 1. Vertical Sequence (Mechanical Discovery)
+        self.seq_w = QtWidgets.QWidget(); self.seq_l = QtWidgets.QVBoxLayout(self.seq_w); self.seq_l.setSpacing(12); self.seq_l.setContentsMargins(0, 0, 0, 0)
+        self._slots = []
+        for i in range(3):
+            s = QtWidgets.QLabel("..."); s.setObjectName("hero_sub"); s.setStyleSheet("font-family: 'Consolas', monospace; font-size: 11px; color: rgba(255,255,255,0.15);"); s.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            self._slots.append(s); self.seq_l.addWidget(s)
+        self._slots[1].setStyleSheet("font-family: 'Consolas', monospace; font-size: 13px; font-weight: 700; color: #007AFF;")
+        cl.addWidget(self.seq_w)
         
-        icon = QtWidgets.QLabel("✨")
-        icon.setStyleSheet("font-size: 64px;")
-        icon.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        
-        t = QtWidgets.QLabel("Sync Complete")
-        t.setObjectName("title")
-        s = QtWidgets.QLabel("Your collection is now ready on your PC.")
-        s.setObjectName("subtitle")
-        s.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        
-        btn = QtWidgets.QPushButton("Watch Now")
-        btn.setObjectName("primary")
-        btn.setFixedHeight(50)
-        btn.clicked.connect(self.open_library)
-        
-        c_layout.addWidget(icon)
-        c_layout.addWidget(t)
-        c_layout.addWidget(s)
-        c_layout.addStretch()
-        c_layout.addWidget(btn)
-        
-        layout.addWidget(card)
-        self.stacked_widget.addWidget(page)
+        # 2. Movie Count (Primary Result)
+        self._s_count = QtWidgets.QLabel("0 Videos Found"); self._s_count.setStyleSheet("font-size: 20px; font-weight: 800; color: #FFF;"); self._s_count.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(self._s_count)
 
-    def refresh_devices(self):
-        self.device_combo.clear()
-        devices = get_devices()
-        if not devices:
-            self.device_combo.addItem("Searching for connections...")
-            self.scan_btn.setEnabled(False)
-            QtCore.QTimer.singleShot(2000, self.refresh_devices)
-        else:
-            for d in devices: self.device_combo.addItem(d["name"])
-            self.scan_btn.setEnabled(True)
-
-    def open_mtp_picker(self):
-        from .main_window_sub import MtpFolderPickerDialog
-        dialog = MtpFolderPickerDialog(self, self.device_combo.currentText(), self.config)
-        if dialog.exec():
-            self.target_paths = dialog.selected_paths
-            self.paths_lbl.setText(f"Target: {', '.join(self.target_paths)}")
-
-    def start_scan_flow(self):
-        self.execute_scan("mtp", self.device_combo.currentText())
-
-    def execute_scan(self, mode, root_id):
-        # Force string type to prevent 'dict' TypeError
-        mode = str(mode)
-        root_id = str(root_id)
+        # 3. Progress Bar (Foundation)
+        self._s_bar = QtWidgets.QProgressBar(); self._s_bar.setRange(0, 0); self._s_bar.setFixedHeight(3); cl.addWidget(self._s_bar)
         
-        self.set_current_step(1, 2)
-        self.controls_stack.setCurrentIndex(0)
-        self.sync_phase_lbl.setText("INITIALIZING")
-        self.sync_file_lbl.setText("Connecting...")
-        self.sync_timer_lbl.setText("00:00")
-        self._scan_start_time = time.time()
-        self._live_timer.start()
-        self.sync_found_lbl.setText("")
-        self.sync_checked_lbl.setText("0 files scanned")
-        self.scan_worker = ScanWorker(mode, root_id, self.config, self.target_paths)
-        self.scan_worker.progress.connect(self.update_scan_progress)
-        self.scan_worker.finished.connect(self.handle_scan_results)
-        self.scan_worker.failed.connect(self.handle_scan_failure)
-        self.scan_worker.start()
-
-    def update_scan_progress(self, msg):
-        if msg.startswith("__PHASE__:"):
-            parts = msg.split(":", 3)
-            self.sync_phase_lbl.setText(f"PHASE {parts[1]} OF {parts[2]}")
-            self.sync_file_lbl.setText(parts[3])
-        elif msg.startswith("__FOUND__:"):
-            parts = msg.split(":")
-            self.sync_found_lbl.setText(f"{parts[1]} Movies Found")
-        elif msg.startswith("__INFO__:"):
-            parts = msg.split(":")
-            self.sync_checked_lbl.setText(f"{parts[2]} files scanned")
-        elif msg.startswith("__FOLDER__:"):
-            path = msg[11:].split("/")[-1]
-            self.sync_folder_lbl.setText(f"Scanning: {path}")
-
-    def handle_scan_results(self, videos, subtitles):
-        self._live_timer.stop()
-        items = build_transfer_plan(videos, subtitles, self.config)
+        # 4. Controls
+        self._ctrl_stack = QtWidgets.QStackedWidget(); self._ctrl_stack.setMaximumWidth(380); self._ctrl_stack.setMinimumHeight(116)
+        cl.addWidget(self._ctrl_stack, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
         
-        # Sort items: Shows first (grouped), then Movies
-        items.sort(key=lambda x: (0 if x['media'].type == "episode" else 1, x['media'].title))
+        # Active State
+        act_w = QtWidgets.QWidget(); al = QtWidgets.QHBoxLayout(act_w); al.setContentsMargins(0, 0, 0, 0); act_w.setMinimumHeight(116)
+        self.primary_stop_btn = QtWidgets.QPushButton(" Stop"); self.primary_stop_btn.setObjectName("secondary"); self.primary_stop_btn.setIcon(QtGui.QIcon("src/ui/assets/icons/stop.svg")); self.primary_stop_btn.setIconSize(QtCore.QSize(18, 18)); self.primary_stop_btn.setFixedSize(160, 44)
+        self.primary_stop_btn.clicked.connect(self._on_primary_stop); al.addStretch(); al.addWidget(self.primary_stop_btn); al.addStretch(); self._ctrl_stack.addWidget(act_w)
         
-        for i in reversed(range(self.grid_layout.count())):
-            self.grid_layout.itemAt(i).widget().setParent(None)
-        self.cards = []
-        if not items:
-            self.scroll_area.hide()
-            self.empty_state.show()
-        else:
-            self.empty_state.hide()
-            self.scroll_area.show()
-            for idx, it in enumerate(items):
-                card = MediaCard(it)
-                self.cards.append(card)
-                self.grid_layout.addWidget(card, idx // 3, idx % 3)
-        self.refresh_summary()
-        self.set_current_step(2, 3)
+        # Decision State
+        dec_w = QtWidgets.QWidget(); dl = QtWidgets.QVBoxLayout(dec_w); dl.setSpacing(0); dl.setContentsMargins(0, 0, 0, 0); dec_w.setMinimumHeight(116)
         
-        # Start JIT Thumbnails
-        self.thumb_worker = ThumbnailWorker(items, self.config)
-        self.thumb_worker.pixel_ready.connect(self._on_thumb_ready)
-        self.thumb_worker.start()
+        # Row 1: The Encouraged Path
+        r1_w = QtWidgets.QWidget(); r1 = QtWidgets.QHBoxLayout(r1_w); r1.setContentsMargins(0, 0, 0, 0)
+        self.resume_btn = QtWidgets.QPushButton(" Resume"); self.resume_btn.setObjectName("primary"); self.resume_btn.setIcon(QtGui.QIcon("src/ui/assets/icons/play.svg")); self.resume_btn.setFixedHeight(50)
+        r1.addWidget(self.resume_btn); dl.addWidget(r1_w)
+        
+        dl.addSpacing(10) # TIGHT ZEN GAP
+        
+        # Row 2: Utility Choices
+        r2_w = QtWidgets.QWidget(); r2 = QtWidgets.QHBoxLayout(r2_w); r2.setContentsMargins(0, 0, 0, 0); r2.setSpacing(12)
+        self.restart_btn = QtWidgets.QPushButton(" Restart"); self.restart_btn.setObjectName("secondary"); self.restart_btn.setFixedHeight(42)
+        self.restart_btn.setIcon(QtGui.QIcon("src/ui/assets/icons/restart.svg")); self.restart_btn.setIconSize(QtCore.QSize(18, 18))
+        self.skip_btn = QtWidgets.QPushButton(" Skip Full Scan"); self.skip_btn.setObjectName("secondary"); self.skip_btn.setFixedHeight(42)
+        self.skip_btn.setIcon(QtGui.QIcon("src/ui/assets/icons/skip.svg")); self.skip_btn.setIconSize(QtCore.QSize(18, 18))
+        
+        r2.addWidget(self.restart_btn); r2.addWidget(self.skip_btn); dl.addWidget(r2_w)
+        dl.addStretch() # Anchors buttons together
+        self._ctrl_stack.addWidget(dec_w)
+        
+        self.resume_btn.clicked.connect(self._on_resume); self.restart_btn.clicked.connect(self._on_stop); self.skip_btn.clicked.connect(self._on_review)
+        l.addWidget(container); l.addStretch(); return page
 
-    def _on_thumb_ready(self, idx, pixmap):
-        if idx < len(self.cards):
-            self.cards[idx].set_thumbnail(pixmap)
+    def _on_primary_stop(self):
+        if hasattr(self, "sync_worker") and self.sync_worker and self.sync_worker.isRunning():
+            self.sync_worker.abort()
+            self.primary_stop_btn.setText(" Stopping...")
+            self._slots[1].setText("Stopping — finishing current file...")
+            self._slots[2].setText("Will stop cleanly after this file completes.")
+            return
+        if hasattr(self, "scan_worker"): self.scan_worker.pause()
+        self._ctrl_stack.setCurrentIndex(1); self._slots[1].setText(self._slots[1].text() + " • PAUSED")
+
+    def _on_resume(self):
+        if hasattr(self, "scan_worker"): self.scan_worker.resume()
+        self._ctrl_stack.setCurrentIndex(0); self._slots[1].setText(self._slots[1].text().replace(" • PAUSED", ""))
+
+    def _on_review(self):
+        if hasattr(self, "scan_worker") and self.scan_worker.isRunning():
+            self.scan_worker.abort(use_partial=True); self.scan_worker.wait(1000)
+            self._on_done(self.scan_worker.videos, self.scan_worker.subtitles)
+
+    def _on_stop(self):
+        if hasattr(self, "scan_worker"): self.scan_worker.abort(use_partial=False); self.scan_worker.wait(1000)
+        self._return_to_setup()
+
+    def _on_progress(self, msg):
+        try:
+            if "__FOLDER__:" in msg:
+                _, path = msg.split(":", 1)
+                name = path.split("/")[-1] if "/" in path else (path.split("\\")[-1] if "\\" in path else path)
+                self._slots[0].setText(self._slots[1].text())
+                self._slots[1].setText(f"📁  /{name[:24]}")
+                self._slots[2].setText("Scanning next...")
+            elif "__FOUND__:" in msg:
+                _, v, _ = msg.split(":") # __FOUND__:v:s
+                self._s_count.setText(f"{v} Videos Found")
+            elif "__PHASE__:" in msg:
+                self._slots[1].setText(msg.split(":")[-1])
+        except Exception: pass
+
+    def _start_scan(self):
+        device_ref = self._selected_device_ref()
+        self._scan_title.setText("Finding your videos...")
+        self.primary_stop_btn.setText(" Stop")
+        self.primary_stop_btn.setEnabled(True)
+        self._s_count.setText("0 Videos Found")
+        self._s_bar.setRange(0, 0)
+        for slot in self._slots: slot.setText("...")
+        self._go(1, 1); self._scan_start = time.time(); self.scan_worker = ScanWorker("mtp", device_ref, self.config, self.target_paths)
+        self.scan_worker.progress.connect(self._on_progress); self.scan_worker.finished.connect(self._on_done); self.scan_worker.failed.connect(self._on_scan_failed); self.scan_worker.start(); self._ctrl_stack.setCurrentIndex(0)
+
+    def _on_done(self, v, s):
+        self._all_items = build_transfer_plan(v, s, self.config)
+        for item in self._all_items: item["selected"] = item.get("selected", True)
+        self._sort_key = "title"
+        self._apply_sort()
+        self._go(2, 2)
+        QtCore.QTimer.singleShot(0, lambda: self._apply_filter("All"))
+
+    def _on_scan_failed(self, msg):
+        self.primary_stop_btn.setEnabled(True)
+        QtWidgets.QMessageBox.critical(self, "Scan Failed", str(msg))
+        self._return_to_setup()
+
+    def closeEvent(self, event):
+        for attr in ["scan_worker", "sync_worker"]:
+            if hasattr(self, attr):
+                w = getattr(self, attr)
+                if w and w.isRunning(): w.abort(); w.wait(1000)
+        event.accept()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._grid_reflow.start(60)
+
+    # ────── Library / Results ──────
+    def _page_library(self):
+        page = QtWidgets.QWidget(); l = QtWidgets.QVBoxLayout(page); l.setContentsMargins(0, 0, 0, 0); l.setSpacing(0)
+        self.library_header = LibraryHeader(
+            PAGE_MARGIN_X,
+            LIBRARY_SECTION_GAP,
+            self._return_to_setup,
+            self._apply_filter,
+            self._start_import,
+            self._on_select_toggle,
+            self._on_sort_changed,
+        )
+        l.addWidget(self.library_header)
+        self.library_grid = LibraryGrid(PAGE_MARGIN_X, self.refresh_summary)
+        l.addWidget(self.library_grid)
+        self.import_btn = self.library_header.copy_top_btn
+        return page
+
+    def _apply_filter(self, f):
+        self._af = f
+        self.library_header.set_active_filter(f)
+        vis = [i for i in self._all_items if (f == "All" or (f == "Movies" and i['media'].type == "movie") or (f == "Episodes" and i['media'].type == "episode"))]
+        fallback_w = max(self.library_grid.width(), self.stack.width(), self.width())
+        self.library_grid.render_items(vis, fallback_w)
 
     def refresh_summary(self):
-        sel = sum(1 for c in self.cards if c.is_selected())
-        self.summary_lbl.setText(f"{sel} Items Selected")
-        self.import_btn.setEnabled(sel > 0)
+        visible_count = len(getattr(self.library_grid, "_items", [])) if hasattr(self, "library_grid") else 0
+        selected_count = self.library_grid.selected_count() if hasattr(self, "library_grid") else 0
+        self.library_header.set_counts(visible_count, len(self._all_items), selected_count)
+        self.library_header.update_select_checkbox(selected_count, visible_count)
+        self.import_btn.setEnabled(selected_count > 0)
+        self.library_header.set_copy_enabled(selected_count > 0)
 
-    def start_sync_flow(self):
-        selected = [c.item_data for c in self.cards if c.is_selected()]
-        if not selected: return
-        self.set_current_step(1, 4)
-        self.sync_phase_lbl.setText("TRANSFERRING")
-        self.sync_bar.setRange(0, 100)
+    def _on_select_toggle(self, checked: bool):
+        self.library_grid.set_all_selected(checked)
+
+    def _apply_sort(self):
+        key = getattr(self, "_sort_key", "title")
+        if key == "title":
+            self._all_items.sort(key=lambda x: (0 if x["media"].type == "episode" else 1, x["media"].title.lower()))
+        elif key == "season":
+            self._all_items.sort(key=lambda x: (
+                x["media"].title.lower(),
+                x["media"].season or 0,
+                x["media"].episode or 0,
+            ))
+        elif key == "type":
+            self._all_items.sort(key=lambda x: (x["media"].type, x["media"].title.lower()))
+
+    def _on_sort_changed(self, sort_key: str):
+        self._sort_key = sort_key
+        self._apply_sort()
+        self._apply_filter(getattr(self, "_af", "All"))
+
+    def _start_import(self):
+        selected = self.library_grid.selected_items()
+        self._go(1, 3)
+        self._scan_title.setText("Copying to PC...")
+        self.primary_stop_btn.setText(" Stop Import")
+        self.primary_stop_btn.setEnabled(True)
+        self._ctrl_stack.setCurrentIndex(0)
+        self._s_bar.setRange(0, 0)
+        self._s_count.setText(f"{len(selected)} items queued")
+        self._slots[0].setText("Preparing transfer...")
+        self._slots[1].setText("Waiting for first file...")
+        self._slots[2].setText("Transfer stays active even if Windows opens a copy dialog.")
         self.sync_worker = SyncWorker(selected, self.config)
         self.sync_worker.progress.connect(self._on_sync_progress)
-        self.sync_worker.finished.connect(lambda: self.set_current_step(3, 4))
+        self.sync_worker.finished.connect(self._on_sync_finished)
+        self.sync_worker.failed.connect(self._on_sync_failed)
+        self.sync_worker.cancelled.connect(self._on_sync_cancelled)
         self.sync_worker.start()
 
     def _on_sync_progress(self, msg):
-        if ":" in msg:
-            p = msg.split(":")
-            self.sync_file_lbl.setText(f"Syncing {p[0]}")
-            self.sync_bar.setValue(int(p[1]))
+        text = str(msg or "")
+        if text.startswith("__FILE_PROGRESS__:"):
+            value = text.split(":", 1)[1]
+            if value == "PULSE":
+                if self._s_bar.maximum() != 0:
+                    self._s_bar.setRange(0, 0)
+            else:
+                if self._s_bar.maximum() == 0:
+                    self._s_bar.setRange(0, 100)
+                try:
+                    self._s_bar.setValue(int(value))
+                except ValueError:
+                    pass
+            return
 
-    def open_library(self):
-        os.startfile(self.config["destinationRoot"])
-        self.close()
+        if self._s_bar.maximum() == 0:
+            self._s_bar.setRange(0, 100)
 
-    def _on_live_tick(self):
-        if self._scan_start_time:
-            elapsed = int(time.time() - self._scan_start_time)
-            self.sync_timer_lbl.setText(f"{elapsed//60:02d}:{elapsed%60:02d}")
+        if text.startswith("[") and "] Processing: " in text:
+            left, right = text.split(" Processing: ", 1)
+            self._slots[0].setText(left)
+            self._slots[1].setText(right[:48])
+            self._slots[2].setText("Copying video and subtitles...")
+            return
 
-    def _on_stop_pressed(self):
-        if self.scan_worker: 
-            self.scan_worker.pause()
-            self.controls_stack.setCurrentIndex(1)
+        if text.startswith("Awaiting MTP transfer: "):
+            self._slots[2].setText(f"Waiting for Windows copy: {text.replace('Awaiting MTP transfer: ', '')[:34]}")
+            return
 
-    def _resume_scan(self):
-        if self.scan_worker:
-            self.scan_worker.resume()
-            self.controls_stack.setCurrentIndex(0)
+        if text.startswith("__TRANSFER_STATE__:"):
+            self._slots[1].setText(text.replace("__TRANSFER_STATE__:", "")[:64])
+            if self._s_bar.maximum() != 0:
+                self._s_bar.setRange(0, 0)
+            return
 
-    def _use_partial_scan(self):
-        if self.scan_worker: self.scan_worker.stop()
+        if text.startswith("__TRANSFER_HINT__:"):
+            self._slots[2].setText(text.replace("__TRANSFER_HINT__:", "")[:72])
+            return
 
-    def handle_scan_failure(self, msg):
-        self._live_timer.stop()
-        QtWidgets.QMessageBox.critical(self, "Error", msg)
-        self.set_current_step(0, 1)
+        if text.startswith("Moved video to -> "):
+            self._slots[2].setText("Video saved to library")
+            return
 
-    def open_library(self):
-        os.startfile(self.config["destinationRoot"])
-        self.close()
+        if text.startswith("Moved subtitle to -> "):
+            self._slots[2].setText("Subtitle saved to library")
+            return
 
-    def _on_live_tick(self):
-        if self._scan_start_time:
-            elapsed = int(time.time() - self._scan_start_time)
-            self.sync_timer_lbl.setText(f"{elapsed//60:02d}:{elapsed%60:02d}")
+        if text.startswith("Starting import of "):
+            self._slots[0].setText(text)
+            return
 
-    def _on_stop_pressed(self):
-        if self.scan_worker: 
-            self.scan_worker.pause()
-            self.controls_stack.setCurrentIndex(1)
+        if text.startswith("Import complete."):
+            self._slots[1].setText("Import complete")
+            self._slots[2].setText("")
+            self._s_bar.setRange(0, 100)
+            self._s_bar.setValue(100)
+            return
 
-    def _resume_scan(self):
-        if self.scan_worker:
-            self.scan_worker.resume()
-            self.controls_stack.setCurrentIndex(0)
+        self._slots[1].setText(text[:48])
 
-    def _use_partial_scan(self):
-        if self.scan_worker: self.scan_worker.stop()
+    def _on_sync_finished(self):
+        self.primary_stop_btn.setEnabled(True)
+        self._go(3, 3)
 
-    def handle_scan_failure(self, msg):
-        self._live_timer.stop()
-        QtWidgets.QMessageBox.critical(self, "Error", msg)
-        self.set_current_step(0, 1)
+    def _on_sync_cancelled(self):
+        # User stopped intentionally. Return to library, no error dialog.
+        self.primary_stop_btn.setText(" Stop Import")
+        self.primary_stop_btn.setEnabled(True)
+        self._go(2, 2)
+        self.refresh_summary()
 
-class ThumbnailWorker(QtCore.QThread):
-    pixel_ready = QtCore.Signal(int, QtGui.QPixmap)
-    
-    def __init__(self, items, config):
-        super().__init__()
-        self.items = items
-        self.config = config
-        
-    def run(self):
-        for idx, item in enumerate(self.items):
-            try:
-                path = item.get("virtual_path", "")
-                if os.path.exists(path):
-                    pixmap = self.get_shell_thumbnail(path)
-                    if pixmap:
-                        self.pixel_ready.emit(idx, pixmap)
-            except Exception: continue
+    def _on_sync_failed(self, msg):
+        self.primary_stop_btn.setEnabled(True)
+        QtWidgets.QMessageBox.critical(self, "Import Failed", str(msg))
+        self._go(2, 2)
 
-    def get_shell_thumbnail(self, path):
-        provider = QtWidgets.QFileIconProvider()
-        icon = provider.icon(QtCore.QFileInfo(path))
-        return icon.pixmap(320, 240)
+    def _page_done(self):
+        page = QtWidgets.QWidget(); l = QtWidgets.QVBoxLayout(page); l.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter); l.setSpacing(24)
+        t = QtWidgets.QLabel("All Saved!"); t.setObjectName("hero_title"); l.addWidget(t, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        s = QtWidgets.QLabel("Your videos are ready on your PC."); s.setObjectName("hero_sub"); l.addWidget(s, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        actions = QtWidgets.QWidget(); al = QtWidgets.QHBoxLayout(actions); al.setContentsMargins(0, 0, 0, 0); al.setSpacing(14)
+        watch_btn = QtWidgets.QPushButton("Watch now  →"); watch_btn.setObjectName("primary"); watch_btn.setFixedHeight(58); watch_btn.clicked.connect(self._open_dest)
+        discover_btn = QtWidgets.QPushButton("Discover New"); discover_btn.setObjectName("secondary"); discover_btn.setFixedHeight(58); discover_btn.clicked.connect(self._start_new_discovery)
+        al.addWidget(watch_btn); al.addWidget(discover_btn); l.addWidget(actions, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        return page
+
+    def _open_dest(self): os.startfile(self.config["destinationRoot"])
+    def _start_new_discovery(self):
+        self._all_items = []
+        self.target_paths = []
+        while self.tags_l.count():
+            item = self.tags_l.takeAt(0)
+            widget = item.widget() if item else None
+            if widget:
+                widget.setParent(None)
+        self.tags_sc.setVisible(False)
+        self.scan_btn.setText("Look for All Videos  →")
+        self.refresh_devices()
+        self._return_to_setup()
+    def _open_picker(self):
+        from .main_window_sub import MtpFolderPickerDialog
+        d = MtpFolderPickerDialog(self, self.device_combo.currentText(), self._selected_device_ref(), self.config)
+        if d.exec(): [ (self.target_paths.append(p), self._add_chip(p)) for p in d.selected_paths if p not in self.target_paths ]
+    def _reflow_library_grid(self):
+        if hasattr(self, "stack") and self.stack.currentIndex() == 2 and self._all_items:
+            self._apply_filter(getattr(self, "_af", "All"))
+    def _selected_device_ref(self):
+        data = self.device_combo.currentData()
+        return str(data if data else self.device_combo.currentText())
+    def _add_chip(self, p):
+        c = QtWidgets.QPushButton(f"📁 {p.split('/')[-1]} ✕"); c.setObjectName("ghost"); c.clicked.connect(lambda _, x=p, w=c: self._rem_chip(x, w)); self.tags_l.addWidget(c); self.tags_sc.setVisible(True); self.scan_btn.setText("Look for Specific Videos  →")
+    def _rem_chip(self, path, widget):
+        if path in self.target_paths: self.target_paths.remove(path)
+        widget.setParent(None); 
+        if self.tags_l.count() == 0: self.tags_sc.setVisible(False); self.scan_btn.setText("Look for All Videos  →")
+    def refresh_devices(self):
+        self.device_combo.clear(); ds = get_devices()
+        if ds: [self.device_combo.addItem(d["name"], d.get("id") or d.get("path") or d["name"]) for d in ds]; self.scan_btn.setEnabled(True)
+        else: self.device_combo.addItem("Plug in a phone..."); self.scan_btn.setEnabled(False)
+
+if __name__ == "__main__":
+    import sys
+    app = QtWidgets.QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from .config_manager import normalize_key
 
 VIDEO_PAT = re.compile(r"(.+?)[ ._-]+s(\d{1,2})[ ._-]*e(\d{1,3})(?:\b|[ ._-])", re.I)
+EP_LABEL_PAT = re.compile(r"(.+?)[ ._-]+s(?:eason)?\s*(\d{1,2})[ ._-]*(?:e|ep|episode)\s*(\d{1,3})(?:\b|[ ._-])", re.I)
 ALT_EP_PAT = re.compile(r"(.+?)[ ._-]+(\d{1,2})x(\d{1,3})(?:\b|[ ._-])", re.I)
 YEAR_PAT = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
@@ -15,6 +16,7 @@ class MediaInfo:
     year: int | None
     destination_base: str
     extension: str
+    is_precise: bool = False
 
 def cleanup_name(value: str) -> str:
     value = re.sub(r"\b(480p|720p|1080p|2160p|4k)\b", " ", value, flags=re.I)
@@ -26,6 +28,12 @@ def cleanup_name(value: str) -> str:
     return value
 
 def cleanup_title(value: str) -> str:
+    # Strip quality/codec tokens that may have survived from the
+    # title portion of an episode filename (e.g. "The Boys 480p S03E02"
+    # → group(1) is "The Boys 480p" before this function is called).
+    value = re.sub(r"\b(480p|720p|1080p|2160p|4k)\b", " ", value, flags=re.I)
+    value = re.sub(r"\b(x264|x265|h264|h265|hevc|hdr|webrip|webdl|web-dl|bluray|brrip|dvdrip)\b", " ", value, flags=re.I)
+    value = re.sub(r"\b(aac2?\.?0|aac|dts|ac3|eac3|ddp5?\.?1|atmos)\b", " ", value, flags=re.I)
     value = re.sub(r"[._]+", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
     parts = [p.capitalize() for p in value.split(" ") if p]
@@ -39,20 +47,20 @@ def sanitize_segment(value: str) -> str:
     return value
 
 def parse_media(name: str, extension: str) -> MediaInfo:
-    match = VIDEO_PAT.search(name) or ALT_EP_PAT.search(name)
+    match = VIDEO_PAT.search(name) or EP_LABEL_PAT.search(name) or ALT_EP_PAT.search(name)
     if match:
         title = cleanup_title(match.group(1))
         season = int(match.group(2))
         episode = int(match.group(3))
         destination_base = f"{title} - S{season:02d}E{episode:02d}"
-        return MediaInfo("episode", title, season, episode, None, destination_base, extension)
+        return MediaInfo("episode", title, season, episode, None, destination_base, extension, True)
 
     year_match = YEAR_PAT.search(name)
     raw_title = name[: year_match.start()].strip() if year_match else name.strip()
     title = cleanup_title(raw_title)
     year = int(year_match.group(1)) if year_match else None
     destination_base = f"{title} ({year})" if year else title
-    return MediaInfo("movie", title, None, None, year, destination_base, extension)
+    return MediaInfo("movie", title, None, None, year, destination_base, extension, bool(year))
 
 def detect_language(token: str, config: dict) -> str | None:
     token = normalize_key(token)
@@ -109,6 +117,26 @@ def choose_metadata_source(stem: str, parent: str, grandparent: str, is_subtitle
             score += 8  # prefer grandparent for context-rich names
         if is_generic_subtitle_token(normalized, config):
             score -= 80
+        generic_storage_tokens = {
+            "android",
+            "data",
+            "download",
+            "downloads",
+            "file",
+            "files",
+            "internal",
+            "internalsharedstorage",
+            "media",
+            "movie",
+            "movies",
+            "phone",
+            "shared",
+            "storage",
+            "video",
+            "videos",
+        }
+        if normalized and all(part in generic_storage_tokens for part in normalized.split()):
+            score -= 140
         if len(normalized) <= 1:
             score -= 60  # single-char folders like 'd' are useless
         elif len(normalized) <= 3:
@@ -116,7 +144,19 @@ def choose_metadata_source(stem: str, parent: str, grandparent: str, is_subtitle
         # Heavy penalty if this is the hash-like stem
         if candidate == stem and stem_looks_like_hash:
             score -= 150
+        elif candidate == stem:
+            score += 18
         if score > best_score:
             best_score = score
             best = candidate
+
+    # Safety valve: if every candidate scored below the initial threshold,
+    # the loop never updated best. Fall back to the richest non-generic
+    # name rather than returning a hash or a useless storage token.
+    if best_score == -1:
+        for fallback in [grandparent, parent, stem]:
+            if fallback and not is_generic_subtitle_token(normalize_key(fallback), config):
+                best = fallback
+                break
+
     return best
