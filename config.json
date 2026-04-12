@@ -1,0 +1,68 @@
+{
+  "destinationRoot": "C:\\Users\\oGHENETEFA\\Videos\\MovieBox Library",
+  "tvRootName": "TV Shows",
+  "movieRootName": "Movies",
+  "stagingFolderName": ".incoming-from-phone",
+  "videoSourcePaths": [
+    "Android/data/com.community.mbox.ke/files/Download/d"
+  ],
+  "subtitleSourcePaths": [
+    "Android/data/com.community.mbox.ke/files/Download/subtitle"
+  ],
+  "videoExtensions": [
+    ".mp4",
+    ".mkv",
+    ".avi",
+    ".mov",
+    ".m4v"
+  ],
+  "subtitleExtensions": [
+    ".srt",
+    ".ass",
+    ".ssa",
+    ".sub",
+    ".vtt"
+  ],
+  "languageAliases": {
+    "en": "en",
+    "eng": "en",
+    "english": "en",
+    "es": "es",
+    "spa": "es",
+    "spanish": "es",
+    "fr": "fr",
+    "fre": "fr",
+    "french": "fr",
+    "ar": "ar",
+    "arabic": "ar",
+    "hi": "hi",
+    "hindi": "hi"
+  },
+  "subtitleFolderPatterns": [
+    "subtitle",
+    "subtitles",
+    "sub",
+    "subs",
+    "caption",
+    "captions",
+    "cc"
+  ],
+  "ignoredSubtitleTokens": [
+    "forced",
+    "sdh",
+    "utf8",
+    "utf",
+    "text"
+  ],
+  "metadataHints": {
+    "preferSubtitleParentFolder": true,
+    "preferEpisodePattern": true
+  },
+  "scan": {
+    "maxDepth": 6,
+    "maxFiles": 4000,
+    "maxFolders": 4000,
+    "preferAndroidData": true,
+    "appPackageHints": ["mbox", "moviebox", "com.community.mbox.ke"]
+  }
+}
