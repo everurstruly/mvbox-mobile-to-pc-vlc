@@ -1,4 +1,6 @@
-from PySide6 import QtCore, QtWidgets
+import os
+
+from PySide6 import QtCore, QtGui, QtWidgets
 
 
 class MediaCard(QtWidgets.QFrame):
@@ -13,13 +15,16 @@ class MediaCard(QtWidgets.QFrame):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        icons_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "assets", "icons"))
 
         group_items = self._group_items()
         media_type = item_data["media"].type
-        icon = "🎬" if media_type == "movie" else ("📺" if group_items else "📺")
-        self.img = QtWidgets.QLabel(icon)
+        icon_name = "movie.svg" if media_type == "movie" else "show.svg"
+        icon_pixmap = QtGui.QPixmap(os.path.join(icons_dir, icon_name))
+        self.img = QtWidgets.QLabel()
         self.img.setFixedHeight(130)
-        self.img.setStyleSheet("font-size: 42px; background: rgba(0,0,0,0.25); border-top-left-radius: 20px; border-top-right-radius: 20px;")
+        self.img.setPixmap(icon_pixmap.scaled(52, 52, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation))
+        self.img.setStyleSheet("background: rgba(0,0,0,0.25); border-top-left-radius: 20px; border-top-right-radius: 20px;")
         self.img.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
         self.check = QtWidgets.QLabel("✓")

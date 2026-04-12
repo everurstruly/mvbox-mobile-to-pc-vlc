@@ -1,4 +1,6 @@
-from PySide6 import QtCore, QtWidgets
+import os
+
+from PySide6 import QtCore, QtGui, QtWidgets
 
 
 class LibraryHeader(QtWidgets.QWidget):
@@ -21,13 +23,16 @@ class LibraryHeader(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(page_margin_x, 24, page_margin_x, 18)
         layout.setSpacing(section_gap)
+        icons_dir = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "assets", "icons"))
 
         top = QtWidgets.QHBoxLayout()
         top.setSpacing(14)
 
-        back = QtWidgets.QPushButton("‹")
+        back = QtWidgets.QPushButton()
         back.setObjectName("back_inline")
         back.setFixedSize(44, 44)
+        back.setIcon(QtGui.QIcon(os.path.join(icons_dir, "back_chevron.svg")))
+        back.setIconSize(QtCore.QSize(18, 18))
         back.clicked.connect(on_back)
         top.addWidget(back, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
 
@@ -36,8 +41,10 @@ class LibraryHeader(QtWidgets.QWidget):
         title_l.setContentsMargins(0, 0, 0, 0)
         title_l.setSpacing(12)
 
-        self.title_icon_lbl = QtWidgets.QLabel("💿")
-        self.title_icon_lbl.setStyleSheet("font-size: 22px;")
+        self.title_icon_lbl = QtWidgets.QLabel()
+        disc_pixmap = QtGui.QPixmap(os.path.join(icons_dir, "disc.svg"))
+        self.title_icon_lbl.setPixmap(disc_pixmap.scaled(24, 24, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation))
+        self.title_icon_lbl.setFixedSize(24, 24)
         title_l.addWidget(self.title_icon_lbl, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
 
         self.title_lbl = QtWidgets.QLabel("Scanned Device Library")

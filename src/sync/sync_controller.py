@@ -159,6 +159,35 @@ def move_unique(source: Path, target: Path) -> Path:
             return candidate
     return target
 
+def finalize_video_target(source: Path, target: Path) -> tuple[Path, bool]:
+    """
+    Move a freshly copied staged video into place, but reuse the canonical target
+    when it already exists so repeated imports do not create "(1)" duplicates.
+    Returns (final_path, was_reused_existing).
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        try:
+            source.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return target, True
+    return move_unique(source, target), False
+
+def finalize_subtitle_target(source: Path, target: Path) -> tuple[Path, bool]:
+    """
+    Skip duplicate subtitle copies when the destination subtitle already exists.
+    Returns (final_path, was_reused_existing).
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        try:
+            source.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return target, True
+    return move_unique(source, target), False
+
 def write_season_playlists(season_map: dict) -> None:
     """
     season_map: { (title, season_num): [Path, Path, ...] }
@@ -290,8 +319,11 @@ class SyncWorker(QThread):
                     self.progress.emit(f"Failed to copy video for {item['media'].destination_base}. Skipping.")
                     continue
                     
-                final_video = move_unique(video_path, item["destination"])
-                self.progress.emit(f"Moved video to -> {final_video}")
+                final_video, reused_existing_video = finalize_video_target(video_path, item["destination"])
+                if reused_existing_video:
+                    self.progress.emit(f"Using existing video -> {final_video}")
+                else:
+                    self.progress.emit(f"Moved video to -> {final_video}")
 
                 # Track episode destinations for playlist generation
                 media = item["media"]
@@ -303,8 +335,12 @@ class SyncWorker(QThread):
                 for subtitle in item["subtitles"]:
                     sub_path = self.copy_entry(subtitle, stage_dir)
                     if sub_path:
-                        final_sub = move_unique(sub_path, subtitle_destination(final_video, subtitle["language"], subtitle["extension"]))
-                        self.progress.emit(f"Moved subtitle to -> {final_sub}")
+                        subtitle_target = subtitle_destination(final_video, subtitle["language"], subtitle["extension"])
+                        final_sub, reused_existing_subtitle = finalize_subtitle_target(sub_path, subtitle_target)
+                        if reused_existing_subtitle:
+                            self.progress.emit(f"Using existing subtitle -> {final_sub}")
+                        else:
+                            self.progress.emit(f"Moved subtitle to -> {final_sub}")
             
             # Write M3U playlists for every season that was imported
             if season_map:
