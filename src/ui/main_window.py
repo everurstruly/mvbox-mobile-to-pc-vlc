@@ -51,10 +51,10 @@ QPushButton#filter_tab {
 }
 QPushButton#filter_tab[active="true"] { background-color: rgba(0, 122, 255, 0.12); color: #007AFF; border: 1px solid rgba(0,122,255,0.25); }
 QPushButton#back_inline {
-    background: transparent; border: none; color: rgba(255,255,255,0.75);
-    font-size: 14px; font-weight: 700; padding: 8px 12px;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); color: rgba(255,255,255,0.85);
+    font-size: 24px; font-weight: 500; border-radius: 12px; padding: 0;
 }
-QPushButton#back_inline:hover { color: #FFF; }
+QPushButton#back_inline:hover { color: #FFF; border-color: rgba(255,255,255,0.18); background: rgba(255,255,255,0.08); }
 
 /* ── Media Card ── */
 #MediaCard { background-color: rgba(255, 255, 255, 0.04); border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.08); }
@@ -66,6 +66,10 @@ QProgressBar::chunk { background: #007AFF; border-radius: 2px; }
 
 #surfaceCard { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 24px; }
 #library_header { border-bottom: 1px solid rgba(255,255,255,0.06); }
+#library_footer {
+    background: rgba(7,10,20,0.94);
+    border-top: 1px solid rgba(255,255,255,0.08);
+}
 
 QCheckBox { color: rgba(255,255,255,0.4); font-size: 13px; font-weight: 700; spacing: 8px; background: transparent; border: none; }
 QCheckBox:hover { color: #FFF; }
@@ -109,12 +113,12 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # Windows Taskbar Icon Fix (AppUserModelID)
         try:
-            myappid = u'moviebox.sync.desktop.v2'
+            myappid = u'movieknight.desktop.v1'
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
         except Exception:
             pass
 
-        self.setWindowTitle("MovieBox Sync"); self.setMinimumSize(500, 500); self.resize(960, 680)
+        self.setWindowTitle("Movieknight"); self.setMinimumSize(500, 500); self.resize(960, 680)
         
         # Set Branding Icon
         icon_path = os.path.join(os.path.dirname(__file__), "assets", "logo.ico")
@@ -143,7 +147,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not logo_pix.isNull():
             logo_icon.setPixmap(logo_pix.scaled(28, 28, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation))
         bl.addWidget(logo_icon)
-        logo_text = QtWidgets.QLabel("MOVIEBOX SYNC"); logo_text.setObjectName("app_logo")
+        logo_text = QtWidgets.QLabel("MOVIEKNIGHT"); logo_text.setObjectName("app_logo")
         bl.addWidget(logo_text)
         nl.addWidget(brand_w); nl.addStretch()
         self._dots = []; dot_w = QtWidgets.QWidget(); dl = QtWidgets.QHBoxLayout(dot_w); dl.setSpacing(8)
@@ -180,7 +184,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.add_b = QtWidgets.QPushButton("+ Add Folders"); self.add_b.setObjectName("ghost"); self.add_b.setFixedHeight(40); self.add_b.clicked.connect(self._open_picker); cl.addWidget(self.add_b, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
         self.dest_hint = QtWidgets.QLabel(f"Library folder: {self.config['destinationRoot']}"); self.dest_hint.setObjectName("hero_sub"); self.dest_hint.setWordWrap(True); self.dest_hint.setStyleSheet("font-size: 12px;"); cl.addSpacing(20); cl.addWidget(self.dest_hint)
         self.tags_l = QtWidgets.QHBoxLayout(); self.tags_l.setSpacing(8); self.tags_l.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft); self.tags_w = QtWidgets.QWidget(); self.tags_w.setLayout(self.tags_l); self.tags_sc = QtWidgets.QScrollArea(); self.tags_sc.setWidget(self.tags_w); self.tags_sc.setWidgetResizable(True); self.tags_sc.setFixedHeight(48); cl.addWidget(self.tags_sc); self.tags_sc.setVisible(False)
-        cl.addSpacing(32); self.scan_btn = QtWidgets.QPushButton("Look for All Videos  →"); self.scan_btn.setObjectName("primary"); self.scan_btn.setFixedHeight(60); self.scan_btn.clicked.connect(self._start_scan)
+        cl.addSpacing(32); self.scan_btn = QtWidgets.QPushButton("Scan for Videos  →"); self.scan_btn.setObjectName("primary"); self.scan_btn.setFixedHeight(60); self.scan_btn.clicked.connect(self._start_scan)
         cl.addWidget(self.scan_btn); l.addLayout(header); body_l = QtWidgets.QHBoxLayout(); body_l.addStretch(); body_l.addWidget(container); body_l.addStretch(); l.addLayout(body_l); l.addStretch(); self.refresh_devices(force=True); return page
 
     def _page_scanning(self):
@@ -326,11 +330,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._apply_filter,
             self._start_import,
             self._on_select_toggle,
+            self._clear_visible_selection,
             self._on_sort_changed,
         )
         l.addWidget(self.library_header)
         self.library_grid = LibraryGrid(PAGE_MARGIN_X, self.refresh_summary)
-        l.addWidget(self.library_grid)
+        l.addWidget(self.library_grid, 1)
+        l.addWidget(self.library_header.footer_bar)
         self.import_btn = self.library_header.copy_top_btn
         return page
 
@@ -343,14 +349,18 @@ class MainWindow(QtWidgets.QMainWindow):
         visible_count = len(getattr(self.library_grid, "_items", [])) if hasattr(self, "library_grid") else 0
         selected_count = self.library_grid.selected_count() if hasattr(self, "library_grid") else 0
         selectable_count = self.library_grid.selectable_count() if hasattr(self, "library_grid") else 0
-        total_count = len(self._view_items(getattr(self, "_af", "All")))
+        total_count = len(self._all_items)
         self.library_header.set_counts(visible_count, total_count, selected_count, self._view_label_plural())
         self.library_header.update_select_checkbox(selected_count, selectable_count)
+        self.library_header.set_copy_label(self._copy_button_label(selected_count))
         self.import_btn.setEnabled(selected_count > 0)
         self.library_header.set_copy_enabled(selected_count > 0)
 
     def _on_select_toggle(self, checked: bool):
         self.library_grid.set_all_selected(checked)
+
+    def _clear_visible_selection(self):
+        self.library_grid.set_all_selected(False)
 
     def _apply_sort(self):
         self._view_cache = {}
@@ -363,8 +373,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _start_import(self):
         selected = self.library_grid.selected_items()
         self._go(1, 3)
-        self._scan_title.setText("Copying to PC...")
-        self.primary_stop_btn.setText(" Stop Import")
+        self._scan_title.setText("Copying selected videos...")
+        self.primary_stop_btn.setText(" Stop Copy")
         self.primary_stop_btn.setEnabled(True)
         self._ctrl_stack.setCurrentIndex(0)
         self._s_bar.setRange(0, 0)
@@ -446,7 +456,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_sync_cancelled(self):
         # User stopped intentionally. Return to library, no error dialog.
-        self.primary_stop_btn.setText(" Stop Import")
+        self.primary_stop_btn.setText(" Stop Copy")
         self.primary_stop_btn.setEnabled(True)
         self._go(2, 2)
         self.refresh_summary()
@@ -459,7 +469,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _page_done(self):
         page = QtWidgets.QWidget(); l = QtWidgets.QVBoxLayout(page); l.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter); l.setSpacing(24)
         t = QtWidgets.QLabel("All Saved!"); t.setObjectName("hero_title"); l.addWidget(t, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
-        s = QtWidgets.QLabel("Your videos are ready on your PC."); s.setObjectName("hero_sub"); l.addWidget(s, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        s = QtWidgets.QLabel("Your videos are ready on this device."); s.setObjectName("hero_sub"); l.addWidget(s, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
         actions = QtWidgets.QWidget(); al = QtWidgets.QHBoxLayout(actions); al.setContentsMargins(0, 0, 0, 0); al.setSpacing(14)
         watch_btn = QtWidgets.QPushButton("Watch now  →"); watch_btn.setObjectName("primary"); watch_btn.setFixedHeight(58); watch_btn.clicked.connect(self._open_dest)
         discover_btn = QtWidgets.QPushButton("Discover New"); discover_btn.setObjectName("secondary"); discover_btn.setFixedHeight(58); discover_btn.clicked.connect(self._start_new_discovery)
@@ -479,7 +489,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if widget:
                 widget.setParent(None)
         self.tags_sc.setVisible(False)
-        self.scan_btn.setText("Look for All Videos  →")
+        self.scan_btn.setText("Scan for Videos  →")
         self.refresh_devices(force=True)
         self._return_to_setup()
     def _open_picker(self):
@@ -493,11 +503,11 @@ class MainWindow(QtWidgets.QMainWindow):
         data = self.device_combo.currentData()
         return str(data if data else self.device_combo.currentText())
     def _add_chip(self, p):
-        c = QtWidgets.QPushButton(f"📁 {p.split('/')[-1]} ✕"); c.setObjectName("ghost"); c.clicked.connect(lambda _, x=p, w=c: self._rem_chip(x, w)); self.tags_l.addWidget(c); self.tags_sc.setVisible(True); self.scan_btn.setText("Look for Specific Videos  →")
+        c = QtWidgets.QPushButton(f"📁 {p.split('/')[-1]} ✕"); c.setObjectName("ghost"); c.clicked.connect(lambda _, x=p, w=c: self._rem_chip(x, w)); self.tags_l.addWidget(c); self.tags_sc.setVisible(True); self.scan_btn.setText("Scan Specific Videos  →")
     def _rem_chip(self, path, widget):
         if path in self.target_paths: self.target_paths.remove(path)
         widget.setParent(None); 
-        if self.tags_l.count() == 0: self.tags_sc.setVisible(False); self.scan_btn.setText("Look for All Videos  →")
+        if self.tags_l.count() == 0: self.tags_sc.setVisible(False); self.scan_btn.setText("Scan for Videos  →")
     def refresh_devices(self, force=False):
         selected_id = self.device_combo.currentData() if hasattr(self, "device_combo") else None
         selected_text = self.device_combo.currentText() if hasattr(self, "device_combo") else ""
@@ -727,6 +737,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if show_loading:
             loading_label = {
                 "Movies": "Loading movies...",
+                "Shows": "Loading shows...",
                 "Seasons": "Loading seasons...",
             }.get(filter_name, "Loading library...")
             self.library_grid.show_loading(loading_label)
@@ -745,6 +756,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _view_label_plural(self) -> str:
         return {"Movies": "movies", "Shows": "shows", "Seasons": "seasons"}.get(getattr(self, "_af", "All"), "videos")
+
+    def _copy_button_label(self, selected_count: int) -> str:
+        if selected_count <= 0:
+            return "Copy Selected Videos to this Device  →"
+        noun_map = {
+            "All": ("video", "videos"),
+            "Movies": ("movie", "movies"),
+            "Shows": ("show", "shows"),
+            "Seasons": ("season", "seasons"),
+        }
+        singular, plural = noun_map.get(getattr(self, "_af", "All"), ("video", "videos"))
+        noun = singular if selected_count == 1 else plural
+        return f"Copy {selected_count} {noun} to this Device  →"
 
     def _set_device_status(self, text: str, state: str = "info"):
         if not hasattr(self, "device_status_lbl"):
