@@ -116,11 +116,11 @@ class ScanWorker(QtCore.QThread):
     finished = QtCore.Signal(list, list)
     failed = Signal(str)
 
-    def __init__(self, config: dict, mode: str, root_identifier: str, target_paths: list = None):
+    def __init__(self, mode: str, root_identifier: str, config: dict, target_paths: list = None):
         super().__init__()
-        self.config = config
         self.mode = mode
         self.root_identifier = root_identifier
+        self.config = config
         self.target_paths = target_paths or []
         self._is_aborted = False
         self._use_partial = False
@@ -181,11 +181,10 @@ class SyncWorker(QThread):
     finished = Signal()
     failed = Signal(str)
 
-    def __init__(self, config: dict, videos: list, subtitles: list):
+    def __init__(self, items: list, config: dict):
         super().__init__()
+        self.items = items
         self.config = config
-        self.videos = videos
-        self.subtitles = subtitles
         self._is_aborted = False
 
     def abort(self):
@@ -196,7 +195,7 @@ class SyncWorker(QThread):
             if WIN32_AVAILABLE:
                 pythoncom.CoInitialize()
                 
-            items = build_transfer_plan(self.videos, self.subtitles, self.config)
+            items = self.items
             total = len(items)
             self.progress.emit(f"Starting import of {total} items...")
             
