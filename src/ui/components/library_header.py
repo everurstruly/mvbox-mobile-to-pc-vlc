@@ -30,8 +30,8 @@ class LibraryHeader(QtWidgets.QWidget):
         tabs_l.setContentsMargins(8, 0, 0, 0)
         tabs_l.setSpacing(8)
         self._filters = {}
-        for name in ["All", "Movies", "Seasons"]:
-            button = QtWidgets.QPushButton({"All": "All videos", "Movies": "Movies", "Seasons": "Seasons"}[name])
+        for name in ["All", "Movies", "Shows", "Seasons"]:
+            button = QtWidgets.QPushButton({"All": "All videos", "Movies": "Movies", "Shows": "Shows", "Seasons": "Seasons"}[name])
             button.setObjectName("filter_tab")
             button.clicked.connect(lambda _, x=name: on_filter(x))
             self._filters[name] = button

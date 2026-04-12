@@ -70,7 +70,7 @@ QProgressBar::chunk { background: #007AFF; border-radius: 2px; }
 QCheckBox { color: rgba(255,255,255,0.4); font-size: 13px; font-weight: 700; spacing: 8px; background: transparent; border: none; }
 QCheckBox:hover { color: #FFF; }
 QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; border: 1.5px solid rgba(255,255,255,0.2); background: transparent; }
-QCheckBox::indicator:checked { background: #007AFF; border-color: #007AFF; image: url(src/ui/assets/icons/check.svg); }
+QCheckBox::indicator:checked { background: #007AFF; border-color: #007AFF; image: url("__CHECK_ICON__"); }
 QCheckBox::indicator:indeterminate { background: rgba(0,122,255,0.35); border-color: #007AFF; }
 QCheckBox::indicator:hover { border-color: rgba(255,255,255,0.5); }
 
@@ -121,7 +121,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if os.path.exists(icon_path):
             self.setWindowIcon(QtGui.QIcon(icon_path))
             
-        self.config = load_config(); self.setStyleSheet(MASTER_QSS)
+        check_icon_path = os.path.join(os.path.dirname(__file__), "assets", "icons", "check.svg").replace("\\", "/")
+        self.config = load_config(); self.setStyleSheet(MASTER_QSS.replace("__CHECK_ICON__", check_icon_path))
         self.target_paths = []; self._all_items = []; self._af = "All"; self._sort_key = "title"; self._scan_videos = []; self._scan_subtitles = []
         self._view_cache = {}; self._library_render_token = 0; self._device_snapshot = tuple()
         self._grid_reflow = QtCore.QTimer(self); self._grid_reflow.setSingleShot(True); self._grid_reflow.timeout.connect(self._reflow_library_grid)
@@ -578,6 +579,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 item for item in self._all_items
                 if item["media"].type == "movie" and not self._is_series_like_movie(item)
             ]
+        elif filter_name == "Shows":
+            items = self._build_show_items()
         elif filter_name == "Seasons":
             items = self._build_season_items()
         else:
@@ -616,6 +619,53 @@ class MainWindow(QtWidgets.QMainWindow):
             season_item["selected"] = all(child.get("selected", True) for child in season_item["group_items"])
             season_items.append(season_item)
         return season_items
+
+    def _build_show_items(self) -> list[dict]:
+        show_map = {}
+        for item in self._all_items:
+            media = item["media"]
+            if media.type == "episode":
+                key = normalize_key(media.title)
+                if key not in show_map:
+                    show_map[key] = {
+                        "media": SimpleNamespace(
+                            type="show",
+                            title=media.title,
+                            season=None,
+                            episode=None,
+                            year=media.year,
+                            destination_base=media.title,
+                            extension="",
+                            is_precise=True,
+                        ),
+                        "group_items": [],
+                        "selected": True,
+                    }
+                show_map[key]["group_items"].append(item)
+            elif self._is_series_like_movie(item):
+                key = normalize_key(media.title)
+                if key not in show_map:
+                    show_map[key] = {
+                        "media": SimpleNamespace(
+                            type="show",
+                            title=media.title,
+                            season=None,
+                            episode=None,
+                            year=media.year,
+                            destination_base=media.title,
+                            extension="",
+                            is_precise=True,
+                        ),
+                        "group_items": [],
+                        "selected": True,
+                    }
+                show_map[key]["group_items"].append(item)
+
+        show_items = []
+        for show_item in show_map.values():
+            show_item["selected"] = all(child.get("selected", True) for child in show_item["group_items"])
+            show_items.append(show_item)
+        return show_items
 
     def _sorted_view_items(self, items: list[dict], filter_name: str) -> list[dict]:
         key = getattr(self, "_sort_key", "title")
@@ -694,7 +744,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.library_grid.render_items(items, fallback_w)
 
     def _view_label_plural(self) -> str:
-        return {"Movies": "movies", "Seasons": "seasons"}.get(getattr(self, "_af", "All"), "videos")
+        return {"Movies": "movies", "Shows": "shows", "Seasons": "seasons"}.get(getattr(self, "_af", "All"), "videos")
 
     def _set_device_status(self, text: str, state: str = "info"):
         if not hasattr(self, "device_status_lbl"):

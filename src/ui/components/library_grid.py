@@ -16,7 +16,7 @@ class MediaCard(QtWidgets.QFrame):
 
         group_items = self._group_items()
         media_type = item_data["media"].type
-        icon = "🎬" if media_type == "movie" else ("🎞" if group_items else "📺")
+        icon = "🎬" if media_type == "movie" else ("📺" if group_items else "📺")
         self.img = QtWidgets.QLabel(icon)
         self.img.setFixedHeight(130)
         self.img.setStyleSheet("font-size: 42px; background: rgba(0,0,0,0.25); border-top-left-radius: 20px; border-top-right-radius: 20px;")
@@ -34,7 +34,11 @@ class MediaCard(QtWidgets.QFrame):
         info_l.setSpacing(6)
 
         media = item_data["media"]
-        if group_items:
+        if group_items and media.type == "show":
+            season_count = len({item["media"].season for item in group_items if item["media"].season is not None})
+            meta_text = f"SHOW • {season_count} SEASONS • {len(group_items)} EPISODES"
+            title_text = media.title
+        elif group_items:
             meta_text = f"SEASON • {len(group_items)} EPISODES"
             title_text = f"{media.title}\nSeason {media.season:02d}"
         elif media.type == "episode":
