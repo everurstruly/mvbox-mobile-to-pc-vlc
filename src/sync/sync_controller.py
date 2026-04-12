@@ -69,7 +69,7 @@ def wait_for_copy_to_finish(
             break
         progress_callback("__FILE_PROGRESS__:PULSE")
         if time.time() - last_wait_notice >= 2.0:
-            progress_callback(f"__TRANSFER_STATE__:Waiting for Windows to start copying {expected_name}")
+            progress_callback(f"__TRANSFER_STATE__:Preparing transfer for {expected_name}")
             last_wait_notice = time.time()
         time.sleep(0.2)
         
@@ -104,7 +104,7 @@ def wait_for_copy_to_finish(
         if source_size > 0 and curr_size < source_size:
             if time.time() - last_lock_notice >= 2.0:
                 progress_callback(
-                    f"__TRANSFER_STATE__:Receiving {filepath.name} "
+                    f"__TRANSFER_STATE__:Copying {filepath.name} "
                     f"({curr_size // (1024 * 1024)} MB / {source_size // (1024 * 1024)} MB)"
                 )
                 last_lock_notice = time.time()
@@ -138,8 +138,8 @@ def wait_for_copy_to_finish(
         except (IOError, PermissionError):
             stable_ticks = 0
             if time.time() - last_lock_notice >= 2.0:
-                progress_callback(f"__TRANSFER_STATE__:Waiting for file access: {filepath.name}")
-                progress_callback("__TRANSFER_HINT__:If Windows opened a copy dialog, resolve it to continue.")
+                progress_callback(f"__TRANSFER_STATE__:Finalizing transfer for {filepath.name}")
+                progress_callback("__TRANSFER_HINT__:Windows is finishing the current file before import continues.")
                 last_lock_notice = time.time()
             time.sleep(0.5)
 
