@@ -134,10 +134,16 @@ def scan_mtp(device_ref: str, config: dict, log_callback, target_paths=None, sho
     try:
         root_item = get_device_root(device_ref)
         if not root_item:
-            raise RuntimeError(f"Could not find device: {device_ref}")
+            raise RuntimeError("Phone access is unavailable. Unlock your phone, choose File Transfer, allow file access, then reload devices.")
 
         root_folder = root_item.GetFolder
         device_name = root_item.Name
+        try:
+            root_folder.Items()
+        except Exception as exc:
+            raise RuntimeError(
+                "MovieBox Sync can see the phone but cannot read its files yet. Unlock the device, keep it on File Transfer, and approve access on the phone."
+            ) from exc
 
         videos = []
         subtitles = []

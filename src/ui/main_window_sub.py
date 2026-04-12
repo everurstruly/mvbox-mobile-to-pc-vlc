@@ -1,5 +1,114 @@
+from pathlib import Path
+
 from PySide6 import QtWidgets, QtCore
 import pythoncom
+
+from ..core.config_manager import save_config
+
+
+class SettingsDialog(QtWidgets.QDialog):
+    def __init__(self, parent, config: dict):
+        super().__init__(parent)
+        self.config = config
+        self.setWindowTitle("Settings")
+        self.setMinimumWidth(620)
+        self.setStyleSheet(parent.styleSheet())
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(18)
+
+        title = QtWidgets.QLabel("Settings")
+        title.setObjectName("hero_title")
+        title.setStyleSheet("font-size: 30px;")
+        root.addWidget(title)
+
+        subtitle = QtWidgets.QLabel("Choose where imports go and how device detection behaves.")
+        subtitle.setObjectName("hero_sub")
+        root.addWidget(subtitle)
+
+        card = QtWidgets.QFrame()
+        card.setObjectName("surfaceCard")
+        form = QtWidgets.QFormLayout(card)
+        form.setContentsMargins(20, 20, 20, 20)
+        form.setSpacing(14)
+        form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+
+        destination_row = QtWidgets.QWidget()
+        destination_layout = QtWidgets.QHBoxLayout(destination_row)
+        destination_layout.setContentsMargins(0, 0, 0, 0)
+        destination_layout.setSpacing(10)
+        self.destination_edit = QtWidgets.QLineEdit(self.config.get("destinationRoot", ""))
+        self.destination_edit.setPlaceholderText("Choose a destination folder")
+        browse_btn = QtWidgets.QPushButton("Browse…")
+        browse_btn.setObjectName("secondary")
+        browse_btn.clicked.connect(self._browse_destination)
+        destination_layout.addWidget(self.destination_edit, 1)
+        destination_layout.addWidget(browse_btn)
+        form.addRow("Library folder", destination_row)
+
+        self.movie_root_edit = QtWidgets.QLineEdit(self.config.get("movieRootName", "Movies"))
+        form.addRow("Movie folder name", self.movie_root_edit)
+
+        self.tv_root_edit = QtWidgets.QLineEdit(self.config.get("tvRootName", "TV Shows"))
+        form.addRow("TV folder name", self.tv_root_edit)
+
+        self.prefer_android_cb = QtWidgets.QCheckBox("Prefer Android app folders during scan")
+        self.prefer_android_cb.setChecked(bool(self.config.get("scan", {}).get("preferAndroidData", True)))
+        form.addRow("Scan behavior", self.prefer_android_cb)
+
+        self.auto_refresh_cb = QtWidgets.QCheckBox("Auto-refresh connected devices")
+        self.auto_refresh_cb.setChecked(bool(self.config.get("ui", {}).get("autoRefreshDevices", True)))
+        form.addRow("Device detection", self.auto_refresh_cb)
+
+        self.device_refresh_spin = QtWidgets.QSpinBox()
+        self.device_refresh_spin.setRange(1, 30)
+        self.device_refresh_spin.setSuffix(" sec")
+        self.device_refresh_spin.setValue(int(self.config.get("ui", {}).get("deviceRefreshSeconds", 3)))
+        form.addRow("Refresh interval", self.device_refresh_spin)
+
+        root.addWidget(card)
+
+        actions = QtWidgets.QHBoxLayout()
+        actions.addStretch()
+        cancel_btn = QtWidgets.QPushButton("Cancel")
+        cancel_btn.setObjectName("ghost")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QtWidgets.QPushButton("Save Settings")
+        save_btn.setObjectName("primary")
+        save_btn.clicked.connect(self._save)
+        actions.addWidget(cancel_btn)
+        actions.addWidget(save_btn)
+        root.addLayout(actions)
+
+    def _browse_destination(self):
+        current = self.destination_edit.text().strip() or self.config.get("destinationRoot", "")
+        chosen = QtWidgets.QFileDialog.getExistingDirectory(self, "Choose Library Folder", current)
+        if chosen:
+            self.destination_edit.setText(chosen)
+
+    def _save(self):
+        destination = self.destination_edit.text().strip()
+        if not destination:
+            QtWidgets.QMessageBox.warning(self, "Missing Folder", "Choose a library folder before saving.")
+            return
+
+        updated = dict(self.config)
+        updated["destinationRoot"] = str(Path(destination).expanduser())
+        updated["movieRootName"] = self.movie_root_edit.text().strip() or "Movies"
+        updated["tvRootName"] = self.tv_root_edit.text().strip() or "TV Shows"
+        updated["scan"] = {
+            **self.config.get("scan", {}),
+            "preferAndroidData": self.prefer_android_cb.isChecked(),
+        }
+        updated["ui"] = {
+            **self.config.get("ui", {}),
+            "autoRefreshDevices": self.auto_refresh_cb.isChecked(),
+            "deviceRefreshSeconds": self.device_refresh_spin.value(),
+        }
+        save_config(updated)
+        self.config = updated
+        self.accept()
 
 # ── High-Density Folder Picker ──────────────────────────────────────────────
 class MtpFolderPickerDialog(QtWidgets.QDialog):

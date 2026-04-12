@@ -10,6 +10,10 @@ DEFAULT_CONFIG = {
     "tvRootName": "TV Shows",
     "movieRootName": "Movies",
     "stagingFolderName": ".incoming-from-phone",
+    "ui": {
+        "autoRefreshDevices": True,
+        "deviceRefreshSeconds": 3,
+    },
     "videoSourcePaths": [
         "Internal shared storage/Android/data/com.community.mbox.ke/files/Download/d",
         "Internal shared storage/Android/data/com.community.mbox.ke/files/Download",
@@ -81,6 +85,7 @@ def normalize_config(config: dict) -> dict:
     merged["ignoredSubtitleTokens"] = [normalize_key(x) for x in merged.get("ignoredSubtitleTokens", []) if normalize_key(x)]
     merged["metadataHints"] = {**DEFAULT_CONFIG.get("metadataHints", {}), **(merged.get("metadataHints", {}) or {})}
     merged["scan"] = {**DEFAULT_CONFIG.get("scan", {}), **(merged.get("scan", {}) or {})}
+    merged["ui"] = {**DEFAULT_CONFIG.get("ui", {}), **(merged.get("ui", {}) or {})}
     return merged
 
 def load_config() -> dict:

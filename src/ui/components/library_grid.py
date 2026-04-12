@@ -7,7 +7,6 @@ class MediaCard(QtWidgets.QFrame):
         self.setObjectName("MediaCard")
         self.setFixedSize(200, 200)
         self.item_data = item_data
-        self._selected = bool(item_data.get("selected", True))
         self._on_selection_changed = on_selection_changed
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
 
@@ -15,7 +14,10 @@ class MediaCard(QtWidgets.QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.img = QtWidgets.QLabel("🎬" if item_data["media"].type == "movie" else "📺")
+        group_items = self._group_items()
+        media_type = item_data["media"].type
+        icon = "🎬" if media_type == "movie" else ("🎞" if group_items else "📺")
+        self.img = QtWidgets.QLabel(icon)
         self.img.setFixedHeight(130)
         self.img.setStyleSheet("font-size: 42px; background: rgba(0,0,0,0.25); border-top-left-radius: 20px; border-top-right-radius: 20px;")
         self.img.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -32,16 +34,22 @@ class MediaCard(QtWidgets.QFrame):
         info_l.setSpacing(6)
 
         media = item_data["media"]
-        if media.type == "episode":
+        if group_items:
+            meta_text = f"SEASON • {len(group_items)} EPISODES"
+            title_text = f"{media.title}\nSeason {media.season:02d}"
+        elif media.type == "episode":
             meta_text = f"EPISODE • S{media.season:02d}E{media.episode:02d}"
+            title_text = media.title
         elif getattr(media, "is_precise", False):
             meta_text = "MOVIE"
+            title_text = media.title
         else:
             meta_text = "VIDEO"
+            title_text = media.title
 
         meta = QtWidgets.QLabel(meta_text)
         meta.setStyleSheet("color: #007AFF; font-weight: 900; font-size: 9px; letter-spacing: 2px;")
-        title = QtWidgets.QLabel(media.title)
+        title = QtWidgets.QLabel(title_text)
         title.setStyleSheet("font-weight: 700; font-size: 14px; color: #FFF;")
         title.setWordWrap(True)
         info_l.addWidget(meta)
@@ -49,6 +57,7 @@ class MediaCard(QtWidgets.QFrame):
         info_l.addStretch()
         layout.addWidget(self.img)
         layout.addWidget(info)
+        self._selected = False
         self.update_style()
 
     def resizeEvent(self, event):
@@ -61,18 +70,53 @@ class MediaCard(QtWidgets.QFrame):
         super().mousePressEvent(event)
 
     def is_selected(self):
-        return self._selected
+        selected_count, total_count = self._selection_totals()
+        return total_count > 0 and selected_count >= total_count
+
+    def selected_count(self) -> int:
+        selected_count, _ = self._selection_totals()
+        return selected_count
+
+    def represented_count(self) -> int:
+        _, total_count = self._selection_totals()
+        return total_count
+
+    def selected_items(self) -> list[dict]:
+        group_items = self._group_items()
+        if group_items:
+            return [item for item in group_items if item.get("selected", True)]
+        return [self.item_data] if self._selected else []
 
     def set_selected(self, value: bool):
+        group_items = self._group_items()
+        if group_items:
+            for item in group_items:
+                item["selected"] = value
+            self.item_data["selected"] = value
+        else:
+            self.item_data["selected"] = value
         self._selected = value
-        self.item_data["selected"] = value
         self.update_style()
 
     def update_style(self):
-        self.check.setVisible(self._selected)
+        selected_count, total_count = self._selection_totals()
+        self._selected = total_count > 0 and selected_count >= total_count
+        is_partial = 0 < selected_count < total_count
+        self.check.setText("–" if is_partial else "✓")
+        self.check.setVisible(self._selected or is_partial)
         self.setProperty("selected", self._selected)
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def _group_items(self) -> list[dict]:
+        return list(self.item_data.get("group_items", []))
+
+    def _selection_totals(self) -> tuple[int, int]:
+        group_items = self._group_items()
+        if group_items:
+            selected_count = sum(1 for item in group_items if item.get("selected", True))
+            return selected_count, len(group_items)
+        return (1 if bool(self.item_data.get("selected", True)) else 0, 1)
 
 
 class LibraryGrid(QtWidgets.QScrollArea):
@@ -93,11 +137,7 @@ class LibraryGrid(QtWidgets.QScrollArea):
 
     def render_items(self, items: list[dict], fallback_width: int):
         self._items = list(items)
-        while self.grid.count():
-            item = self.grid.takeAt(0)
-            widget = item.widget() if item else None
-            if widget:
-                widget.setParent(None)
+        self._clear_grid()
 
         self.cards = []
         viewport_w = self.viewport().width()
@@ -131,13 +171,57 @@ class LibraryGrid(QtWidgets.QScrollArea):
             self.grid.addWidget(card, index // cols, index % cols, QtCore.Qt.AlignmentFlag.AlignCenter)
         self._on_selection_changed()
 
+    def show_loading(self, label: str = "Updating library..."):
+        self._items = []
+        self.cards = []
+        self._clear_grid()
+
+        loading = QtWidgets.QFrame()
+        loading.setObjectName("surfaceCard")
+        loading.setMaximumWidth(380)
+        layout = QtWidgets.QVBoxLayout(loading)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setSpacing(12)
+
+        title = QtWidgets.QLabel(label)
+        title.setObjectName("hero_title")
+        title.setStyleSheet("font-size: 22px;")
+        title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        spinner = QtWidgets.QProgressBar()
+        spinner.setRange(0, 0)
+        spinner.setTextVisible(False)
+        spinner.setFixedHeight(4)
+
+        subtitle = QtWidgets.QLabel("Preparing the next view...")
+        subtitle.setObjectName("hero_sub")
+        subtitle.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(title)
+        layout.addWidget(spinner)
+        layout.addWidget(subtitle)
+        self.grid.addWidget(loading, 0, 0, 1, 1, QtCore.Qt.AlignmentFlag.AlignCenter)
+
     def selected_count(self) -> int:
-        return sum(1 for card in self.cards if card.is_selected())
+        return sum(card.selected_count() for card in self.cards)
+
+    def selectable_count(self) -> int:
+        return sum(card.represented_count() for card in self.cards)
 
     def selected_items(self) -> list[dict]:
-        return [card.item_data for card in self.cards if card.is_selected()]
+        items = []
+        for card in self.cards:
+            items.extend(card.selected_items())
+        return items
 
     def set_all_selected(self, value: bool):
         for card in self.cards:
             card.set_selected(value)
         self._on_selection_changed()
+
+    def _clear_grid(self):
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            widget = item.widget() if item else None
+            if widget:
+                widget.setParent(None)

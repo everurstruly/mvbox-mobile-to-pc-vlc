@@ -1,9 +1,10 @@
 import os
 import time
 import ctypes
+from types import SimpleNamespace
 from PySide6 import QtWidgets, QtCore, QtGui
 
-from ..core.config_manager import load_config
+from ..core.config_manager import load_config, normalize_key
 from ..core.transfer_planner import build_transfer_plan
 from ..devices.mtp_client import get_devices
 from ..sync.sync_controller import ScanWorker, SyncWorker
@@ -69,9 +70,33 @@ QProgressBar::chunk { background: #007AFF; border-radius: 2px; }
 QCheckBox { color: rgba(255,255,255,0.4); font-size: 13px; font-weight: 700; spacing: 8px; background: transparent; border: none; }
 QCheckBox:hover { color: #FFF; }
 QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; border: 1.5px solid rgba(255,255,255,0.2); background: transparent; }
-QCheckBox::indicator:checked { background: #007AFF; border-color: #007AFF; image: none; }
+QCheckBox::indicator:checked { background: #007AFF; border-color: #007AFF; image: url(src/ui/assets/icons/check.svg); }
 QCheckBox::indicator:indeterminate { background: rgba(0,122,255,0.35); border-color: #007AFF; }
 QCheckBox::indicator:hover { border-color: rgba(255,255,255,0.5); }
+
+QComboBox#device_picker {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 14px;
+    padding: 14px 18px;
+}
+QComboBox#device_picker:hover { border-color: rgba(255,255,255,0.22); background: rgba(255,255,255,0.07); }
+QComboBox#device_picker:focus { border-color: rgba(0,122,255,0.8); background: rgba(0,122,255,0.08); }
+QPushButton#device_reload {
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
+    color: #EEE;
+    padding: 12px 22px;
+    font-weight: 700;
+}
+QPushButton#device_reload:hover { border-color: rgba(255,255,255,0.24); background-color: rgba(255,255,255,0.08); }
+QPushButton#device_reload:pressed { background-color: rgba(255,255,255,0.12); }
+#device_status { font-size: 12px; }
+#device_status[state="info"] { color: rgba(255,255,255,0.48); }
+#device_status[state="success"] { color: #79D28A; }
+#device_status[state="warning"] { color: #FFB454; }
+#device_status[state="danger"] { color: #FF7A7A; }
 """
 
 PAGE_MARGIN_X = 32
@@ -97,9 +122,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.setWindowIcon(QtGui.QIcon(icon_path))
             
         self.config = load_config(); self.setStyleSheet(MASTER_QSS)
-        self.target_paths = []; self._all_items = []; self._af = "All"
+        self.target_paths = []; self._all_items = []; self._af = "All"; self._sort_key = "title"; self._scan_videos = []; self._scan_subtitles = []
+        self._view_cache = {}; self._library_render_token = 0; self._device_snapshot = tuple()
         self._grid_reflow = QtCore.QTimer(self); self._grid_reflow.setSingleShot(True); self._grid_reflow.timeout.connect(self._reflow_library_grid)
+        self._device_poll = QtCore.QTimer(self); self._device_poll.timeout.connect(self._auto_refresh_devices)
         self._build_ui()
+        self._apply_runtime_config()
 
     def _build_ui(self):
         root = QtWidgets.QWidget(); root.setObjectName("main_canvas")
@@ -121,8 +149,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for i in range(4):
             d = QtWidgets.QFrame(); d.setObjectName("step_dot"); d.setFixedSize(8, 8); self._dots.append(d); dl.addWidget(d)
         nl.addWidget(dot_w); nl.addStretch()
-        self.help_btn = QtWidgets.QPushButton("Support"); self.help_btn.setObjectName("utility"); nl.addWidget(self.help_btn); nl.addSpacing(20)
-        self.upd_btn = QtWidgets.QPushButton("Check for Updates"); self.upd_btn.setObjectName("utility"); nl.addWidget(self.upd_btn)
+        self.settings_btn = QtWidgets.QPushButton("Settings"); self.settings_btn.setObjectName("utility"); self.settings_btn.clicked.connect(self._open_settings); nl.addWidget(self.settings_btn); nl.addSpacing(20)
+        self.help_btn = QtWidgets.QPushButton("Support"); self.help_btn.setObjectName("utility"); nl.addWidget(self.help_btn)
         layout.addWidget(self.navbar)
         self.stack = QtWidgets.QStackedWidget(); layout.addWidget(self.stack)
         self.stack.addWidget(self._page_connect()); self.stack.addWidget(self._page_scanning()); self.stack.addWidget(self._page_library()); self.stack.addWidget(self._page_done())
@@ -142,12 +170,17 @@ class MainWindow(QtWidgets.QMainWindow):
         container = QtWidgets.QFrame(); container.setObjectName("surfaceCard"); container.setFixedWidth(540)
         cl = QtWidgets.QVBoxLayout(container); cl.setContentsMargins(SURFACE_INNER_X, 48, SURFACE_INNER_X, 48); cl.setSpacing(0)
         chosen_phone_lbl = QtWidgets.QLabel("CHOSEN PHONE"); chosen_phone_lbl.setObjectName("section_t"); cl.addWidget(chosen_phone_lbl); cl.addSpacing(12)
-        self.device_combo = QtWidgets.QComboBox(); self.device_combo.setFixedHeight(56); cl.addWidget(self.device_combo)
+        device_row = QtWidgets.QHBoxLayout(); device_row.setSpacing(12)
+        self.device_combo = QtWidgets.QComboBox(); self.device_combo.setObjectName("device_picker"); self.device_combo.setFixedHeight(56); device_row.addWidget(self.device_combo, 1)
+        self.device_refresh_btn = QtWidgets.QPushButton("Reload"); self.device_refresh_btn.setObjectName("device_reload"); self.device_refresh_btn.setFixedHeight(56); self.device_refresh_btn.clicked.connect(self._manual_refresh_devices); device_row.addWidget(self.device_refresh_btn)
+        cl.addLayout(device_row)
+        self.device_status_lbl = QtWidgets.QLabel(""); self.device_status_lbl.setObjectName("device_status"); cl.addSpacing(12); cl.addWidget(self.device_status_lbl)
         only_folders_lbl = QtWidgets.QLabel("ONLY THESE FOLDERS (OPTIONAL)"); only_folders_lbl.setObjectName("section_t"); cl.addSpacing(64); cl.addWidget(only_folders_lbl); cl.addSpacing(12)
         self.add_b = QtWidgets.QPushButton("+ Add Folders"); self.add_b.setObjectName("ghost"); self.add_b.setFixedHeight(40); self.add_b.clicked.connect(self._open_picker); cl.addWidget(self.add_b, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.dest_hint = QtWidgets.QLabel(f"Library folder: {self.config['destinationRoot']}"); self.dest_hint.setObjectName("hero_sub"); self.dest_hint.setWordWrap(True); self.dest_hint.setStyleSheet("font-size: 12px;"); cl.addSpacing(20); cl.addWidget(self.dest_hint)
         self.tags_l = QtWidgets.QHBoxLayout(); self.tags_l.setSpacing(8); self.tags_l.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft); self.tags_w = QtWidgets.QWidget(); self.tags_w.setLayout(self.tags_l); self.tags_sc = QtWidgets.QScrollArea(); self.tags_sc.setWidget(self.tags_w); self.tags_sc.setWidgetResizable(True); self.tags_sc.setFixedHeight(48); cl.addWidget(self.tags_sc); self.tags_sc.setVisible(False)
         cl.addSpacing(32); self.scan_btn = QtWidgets.QPushButton("Look for All Videos  →"); self.scan_btn.setObjectName("primary"); self.scan_btn.setFixedHeight(60); self.scan_btn.clicked.connect(self._start_scan)
-        cl.addWidget(self.scan_btn); l.addLayout(header); body_l = QtWidgets.QHBoxLayout(); body_l.addStretch(); body_l.addWidget(container); body_l.addStretch(); l.addLayout(body_l); l.addStretch(); self.refresh_devices(); return page
+        cl.addWidget(self.scan_btn); l.addLayout(header); body_l = QtWidgets.QHBoxLayout(); body_l.addStretch(); body_l.addWidget(container); body_l.addStretch(); l.addLayout(body_l); l.addStretch(); self.refresh_devices(force=True); return page
 
     def _page_scanning(self):
         page = QtWidgets.QWidget(); l = QtWidgets.QVBoxLayout(page); l.setContentsMargins(80, 80, 80, 80); l.setSpacing(24); l.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -254,6 +287,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.scan_worker.progress.connect(self._on_progress); self.scan_worker.finished.connect(self._on_done); self.scan_worker.failed.connect(self._on_scan_failed); self.scan_worker.start(); self._ctrl_stack.setCurrentIndex(0)
 
     def _on_done(self, v, s):
+        self._scan_videos = list(v)
+        self._scan_subtitles = list(s)
         self._all_items = build_transfer_plan(v, s, self.config)
         for item in self._all_items: item["selected"] = item.get("selected", True)
         self._sort_key = "title"
@@ -263,7 +298,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_scan_failed(self, msg):
         self.primary_stop_btn.setEnabled(True)
-        QtWidgets.QMessageBox.critical(self, "Scan Failed", str(msg))
+        text = str(msg)
+        if "allow file access" in text.lower() or "file transfer" in text.lower() or "cannot read its files" in text.lower():
+            self._set_device_status(text, "danger")
+        QtWidgets.QMessageBox.critical(self, "Scan Failed", text)
         self._return_to_setup()
 
     def closeEvent(self, event):
@@ -298,15 +336,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_filter(self, f):
         self._af = f
         self.library_header.set_active_filter(f)
-        vis = [i for i in self._all_items if (f == "All" or (f == "Movies" and i['media'].type == "movie") or (f == "Episodes" and i['media'].type == "episode"))]
-        fallback_w = max(self.library_grid.width(), self.stack.width(), self.width())
-        self.library_grid.render_items(vis, fallback_w)
+        self._render_library_view(f, show_loading=True)
 
     def refresh_summary(self):
         visible_count = len(getattr(self.library_grid, "_items", [])) if hasattr(self, "library_grid") else 0
         selected_count = self.library_grid.selected_count() if hasattr(self, "library_grid") else 0
-        self.library_header.set_counts(visible_count, len(self._all_items), selected_count)
-        self.library_header.update_select_checkbox(selected_count, visible_count)
+        selectable_count = self.library_grid.selectable_count() if hasattr(self, "library_grid") else 0
+        total_count = len(self._view_items(getattr(self, "_af", "All")))
+        self.library_header.set_counts(visible_count, total_count, selected_count, self._view_label_plural())
+        self.library_header.update_select_checkbox(selected_count, selectable_count)
         self.import_btn.setEnabled(selected_count > 0)
         self.library_header.set_copy_enabled(selected_count > 0)
 
@@ -314,22 +352,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.library_grid.set_all_selected(checked)
 
     def _apply_sort(self):
-        key = getattr(self, "_sort_key", "title")
-        if key == "title":
-            self._all_items.sort(key=lambda x: (0 if x["media"].type == "episode" else 1, x["media"].title.lower()))
-        elif key == "season":
-            self._all_items.sort(key=lambda x: (
-                x["media"].title.lower(),
-                x["media"].season or 0,
-                x["media"].episode or 0,
-            ))
-        elif key == "type":
-            self._all_items.sort(key=lambda x: (x["media"].type, x["media"].title.lower()))
+        self._view_cache = {}
 
     def _on_sort_changed(self, sort_key: str):
         self._sort_key = sort_key
         self._apply_sort()
-        self._apply_filter(getattr(self, "_af", "All"))
+        self._render_library_view(getattr(self, "_af", "All"), show_loading=True)
 
     def _start_import(self):
         selected = self.library_grid.selected_items()
@@ -440,6 +468,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _open_dest(self): os.startfile(self.config["destinationRoot"])
     def _start_new_discovery(self):
         self._all_items = []
+        self._scan_videos = []
+        self._scan_subtitles = []
+        self._view_cache = {}
         self.target_paths = []
         while self.tags_l.count():
             item = self.tags_l.takeAt(0)
@@ -448,7 +479,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 widget.setParent(None)
         self.tags_sc.setVisible(False)
         self.scan_btn.setText("Look for All Videos  →")
-        self.refresh_devices()
+        self.refresh_devices(force=True)
         self._return_to_setup()
     def _open_picker(self):
         from .main_window_sub import MtpFolderPickerDialog
@@ -456,7 +487,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if d.exec(): [ (self.target_paths.append(p), self._add_chip(p)) for p in d.selected_paths if p not in self.target_paths ]
     def _reflow_library_grid(self):
         if hasattr(self, "stack") and self.stack.currentIndex() == 2 and self._all_items:
-            self._apply_filter(getattr(self, "_af", "All"))
+            self._render_library_view(getattr(self, "_af", "All"), show_loading=False)
     def _selected_device_ref(self):
         data = self.device_combo.currentData()
         return str(data if data else self.device_combo.currentText())
@@ -466,10 +497,212 @@ class MainWindow(QtWidgets.QMainWindow):
         if path in self.target_paths: self.target_paths.remove(path)
         widget.setParent(None); 
         if self.tags_l.count() == 0: self.tags_sc.setVisible(False); self.scan_btn.setText("Look for All Videos  →")
-    def refresh_devices(self):
-        self.device_combo.clear(); ds = get_devices()
-        if ds: [self.device_combo.addItem(d["name"], d.get("id") or d.get("path") or d["name"]) for d in ds]; self.scan_btn.setEnabled(True)
-        else: self.device_combo.addItem("Plug in a phone..."); self.scan_btn.setEnabled(False)
+    def refresh_devices(self, force=False):
+        selected_id = self.device_combo.currentData() if hasattr(self, "device_combo") else None
+        selected_text = self.device_combo.currentText() if hasattr(self, "device_combo") else ""
+        ds = get_devices()
+        previous_snapshot = self._device_snapshot
+        snapshot = tuple(sorted((d["name"], d.get("id") or d.get("path") or d["name"]) for d in ds))
+        if not force and snapshot == self._device_snapshot:
+            return
+
+        self._device_snapshot = snapshot
+        self.device_combo.blockSignals(True)
+        self.device_combo.clear()
+        if ds:
+            for name, device_id in snapshot:
+                self.device_combo.addItem(name, device_id)
+            match_index = next((i for i in range(self.device_combo.count()) if self.device_combo.itemData(i) == selected_id), -1)
+            if match_index < 0:
+                match_index = next((i for i in range(self.device_combo.count()) if self.device_combo.itemText(i) == selected_text), 0)
+            self.device_combo.setCurrentIndex(max(match_index, 0))
+            self.scan_btn.setEnabled(True)
+            if previous_snapshot and len(snapshot) > len(previous_snapshot):
+                self._set_device_status("New device detected. Ready to scan.", "success")
+            elif force:
+                noun = "device" if len(snapshot) == 1 else "devices"
+                self._set_device_status(f"{len(snapshot)} {noun} available.", "success")
+            else:
+                noun = "device" if len(snapshot) == 1 else "devices"
+                self._set_device_status(f"{len(snapshot)} {noun} ready.", "info")
+        else:
+            self.device_combo.addItem("Plug in a phone...")
+            self.scan_btn.setEnabled(False)
+            self._set_device_status("No accessible phone detected. Unlock the phone, switch USB to File Transfer, then tap Reload.", "warning")
+        self.device_combo.blockSignals(False)
+
+    def _apply_runtime_config(self):
+        self.dest_hint.setText(f"Library folder: {self.config['destinationRoot']}")
+        ui_config = self.config.get("ui", {})
+        if ui_config.get("autoRefreshDevices", True):
+            self._device_poll.start(max(1, int(ui_config.get("deviceRefreshSeconds", 3))) * 1000)
+        else:
+            self._device_poll.stop()
+
+    def _manual_refresh_devices(self):
+        self._set_device_status("Refreshing devices...", "info")
+        self.refresh_devices(force=True)
+
+    def _auto_refresh_devices(self):
+        if self.stack.currentIndex() != 0:
+            return
+        if hasattr(self, "scan_worker") and self.scan_worker and self.scan_worker.isRunning():
+            return
+        if hasattr(self, "sync_worker") and self.sync_worker and self.sync_worker.isRunning():
+            return
+        self.refresh_devices(force=False)
+
+    def _open_settings(self):
+        from .main_window_sub import SettingsDialog
+
+        dialog = SettingsDialog(self, self.config)
+        if dialog.exec():
+            self.config = load_config()
+            self._apply_runtime_config()
+            self.refresh_devices(force=True)
+            if self._scan_videos or self._scan_subtitles:
+                self._all_items = build_transfer_plan(self._scan_videos, self._scan_subtitles, self.config)
+                for item in self._all_items:
+                    item["selected"] = item.get("selected", True)
+            if self._all_items:
+                self._apply_sort()
+                self._render_library_view(getattr(self, "_af", "All"), show_loading=True)
+
+    def _view_items(self, filter_name: str) -> list[dict]:
+        cache_key = (filter_name, getattr(self, "_sort_key", "title"))
+        if cache_key in self._view_cache:
+            return self._view_cache[cache_key]
+
+        if filter_name == "Movies":
+            items = [
+                item for item in self._all_items
+                if item["media"].type == "movie" and not self._is_series_like_movie(item)
+            ]
+        elif filter_name == "Seasons":
+            items = self._build_season_items()
+        else:
+            items = list(self._all_items)
+
+        items = self._sorted_view_items(items, filter_name)
+        self._view_cache[cache_key] = items
+        return items
+
+    def _build_season_items(self) -> list[dict]:
+        season_map = {}
+        for item in self._all_items:
+            media = item["media"]
+            if media.type != "episode" or media.season is None:
+                continue
+            key = (media.title, media.season)
+            if key not in season_map:
+                season_map[key] = {
+                    "media": SimpleNamespace(
+                        type="season",
+                        title=media.title,
+                        season=media.season,
+                        episode=None,
+                        year=media.year,
+                        destination_base=f"{media.title} - Season {media.season:02d}",
+                        extension="",
+                        is_precise=True,
+                    ),
+                    "group_items": [],
+                    "selected": True,
+                }
+            season_map[key]["group_items"].append(item)
+
+        season_items = []
+        for season_item in season_map.values():
+            season_item["selected"] = all(child.get("selected", True) for child in season_item["group_items"])
+            season_items.append(season_item)
+        return season_items
+
+    def _sorted_view_items(self, items: list[dict], filter_name: str) -> list[dict]:
+        key = getattr(self, "_sort_key", "title")
+
+        def media_value(item):
+            return item["media"]
+
+        def title_key(item):
+            media = media_value(item)
+            return (media.title.lower(), media.season or 0, media.episode or 0, media.destination_base.lower())
+
+        if key == "title_desc":
+            return sorted(items, key=title_key, reverse=True)
+        if key == "year_desc":
+            return sorted(
+                items,
+                key=lambda item: (
+                    -(media_value(item).year or -1),
+                    media_value(item).title.lower(),
+                    media_value(item).season or 0,
+                    media_value(item).episode or 0,
+                ),
+            )
+        if key == "season":
+            return sorted(
+                items,
+                key=lambda item: (
+                    media_value(item).title.lower(),
+                    media_value(item).season or 0,
+                    media_value(item).episode or 0,
+                ),
+            )
+        return sorted(items, key=title_key)
+
+    def _is_series_like_movie(self, item: dict) -> bool:
+        media = item["media"]
+        if media.type != "movie":
+            return False
+        title_key = normalize_key(media.title)
+        if not title_key:
+            return False
+        if any(
+            other["media"].type == "episode" and normalize_key(other["media"].title) == title_key
+            for other in self._all_items
+        ):
+            return True
+        if media.is_precise:
+            return False
+        family_count = sum(
+            1
+            for other in self._all_items
+            if other["media"].type == "movie" and normalize_key(other["media"].title) == title_key
+        )
+        return family_count >= 2
+
+    def _render_library_view(self, filter_name: str, show_loading: bool):
+        if not hasattr(self, "library_grid"):
+            return
+        if show_loading:
+            loading_label = {
+                "Movies": "Loading movies...",
+                "Seasons": "Loading seasons...",
+            }.get(filter_name, "Loading library...")
+            self.library_grid.show_loading(loading_label)
+            self._library_render_token += 1
+            token = self._library_render_token
+            QtCore.QTimer.singleShot(0, lambda: self._commit_library_render(token, filter_name))
+            return
+        self._commit_library_render(self._library_render_token, filter_name)
+
+    def _commit_library_render(self, token: int, filter_name: str):
+        if token != self._library_render_token and token != 0:
+            return
+        items = self._view_items(filter_name)
+        fallback_w = max(self.library_grid.width(), self.stack.width(), self.width())
+        self.library_grid.render_items(items, fallback_w)
+
+    def _view_label_plural(self) -> str:
+        return {"Movies": "movies", "Seasons": "seasons"}.get(getattr(self, "_af", "All"), "videos")
+
+    def _set_device_status(self, text: str, state: str = "info"):
+        if not hasattr(self, "device_status_lbl"):
+            return
+        self.device_status_lbl.setProperty("state", state)
+        self.device_status_lbl.setText(text)
+        self.device_status_lbl.style().unpolish(self.device_status_lbl)
+        self.device_status_lbl.style().polish(self.device_status_lbl)
 
 if __name__ == "__main__":
     import sys

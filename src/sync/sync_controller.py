@@ -1,3 +1,4 @@
+import re
 import time
 import shutil
 from pathlib import Path
@@ -158,6 +159,28 @@ def move_unique(source: Path, target: Path) -> Path:
             return candidate
     return target
 
+def write_season_playlists(season_map: dict) -> None:
+    """
+    season_map: { (title, season_num): [Path, Path, ...] }
+    Writes one .m3u playlist file per season into that season's folder.
+    Files within each season are sorted by filename (episode order).
+    """
+    for (title, season_num), paths in season_map.items():
+        if not paths:
+            continue
+        season_dir = paths[0].parent
+        safe_title = re.sub(r'[<>:"/\\|?*]', "", title)
+        playlist_name = f"{safe_title} - Season {season_num:02d}.m3u"
+        playlist_path = season_dir / playlist_name
+        try:
+            lines = ["#EXTM3U"]
+            for p in sorted(paths, key=lambda x: x.name):
+                lines.append(f"#EXTINF:-1,{p.stem}")
+                lines.append(str(p))
+            playlist_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        except Exception:
+            pass  # Never let playlist writing crash the import
+
 class ScanWorker(QtCore.QThread):
     progress = QtCore.Signal(str)
     finished = QtCore.Signal(list, list)
@@ -248,6 +271,9 @@ class SyncWorker(QThread):
             staging_root = Path(self.config["destinationRoot"]) / staging_dir_name
             staging_root.mkdir(parents=True, exist_ok=True)
             
+            # season_map accumulates episode destinations for playlist generation
+            season_map = {}
+
             for idx, item in enumerate(items, start=1):
                 if self._is_aborted:
                     self.progress.emit("Import stopped by user.")
@@ -266,6 +292,12 @@ class SyncWorker(QThread):
                     
                 final_video = move_unique(video_path, item["destination"])
                 self.progress.emit(f"Moved video to -> {final_video}")
+
+                # Track episode destinations for playlist generation
+                media = item["media"]
+                if media.type == "episode" and media.season is not None:
+                    key = (media.title, media.season)
+                    season_map.setdefault(key, []).append(final_video)
                 
                 # Copy Subtitles
                 for subtitle in item["subtitles"]:
@@ -274,6 +306,11 @@ class SyncWorker(QThread):
                         final_sub = move_unique(sub_path, subtitle_destination(final_video, subtitle["language"], subtitle["extension"]))
                         self.progress.emit(f"Moved subtitle to -> {final_sub}")
             
+            # Write M3U playlists for every season that was imported
+            if season_map:
+                self.progress.emit("Writing season playlists...")
+                write_season_playlists(season_map)
+
             # Clean up empty staging dirs
             try:
                 for child in staging_root.iterdir():

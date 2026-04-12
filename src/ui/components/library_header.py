@@ -20,7 +20,7 @@ class LibraryHeader(QtWidgets.QWidget):
         back.clicked.connect(on_back)
         top.addWidget(back, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
 
-        self.title_lbl = QtWidgets.QLabel("Video")
+        self.title_lbl = QtWidgets.QLabel("Library")
         self.title_lbl.setObjectName("hero_title")
         self.title_lbl.setStyleSheet("font-size: 34px;")
         top.addWidget(self.title_lbl, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
@@ -30,29 +30,13 @@ class LibraryHeader(QtWidgets.QWidget):
         tabs_l.setContentsMargins(8, 0, 0, 0)
         tabs_l.setSpacing(8)
         self._filters = {}
-        for name in ["All", "Movies", "Episodes"]:
-            button = QtWidgets.QPushButton({"All": "All videos", "Movies": "Movies", "Episodes": "Episodes"}[name])
+        for name in ["All", "Movies", "Seasons"]:
+            button = QtWidgets.QPushButton({"All": "All videos", "Movies": "Movies", "Seasons": "Seasons"}[name])
             button.setObjectName("filter_tab")
             button.clicked.connect(lambda _, x=name: on_filter(x))
             self._filters[name] = button
             tabs_l.addWidget(button)
         top.addWidget(tabs_w, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
-
-        # Sort dropdown — compact, inline with filter tabs
-        self._sort_combo = QtWidgets.QComboBox()
-        self._sort_combo.addItem("Title A–Z", "title")
-        self._sort_combo.addItem("Season / Episode", "season")
-        self._sort_combo.addItem("Type", "type")
-        self._sort_combo.setFixedHeight(36)
-        self._sort_combo.setStyleSheet(
-            "QComboBox { padding: 4px 12px; font-size: 12px; font-weight: 700; "
-            "border-radius: 10px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); }"
-            "QComboBox::drop-down { border: none; }"
-        )
-        self._sort_combo.currentIndexChanged.connect(
-            lambda: on_sort_changed(self._sort_combo.currentData())
-        )
-        top.addWidget(self._sort_combo, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
 
         top.addStretch()
 
@@ -75,6 +59,27 @@ class LibraryHeader(QtWidgets.QWidget):
         self.summary_lbl = QtWidgets.QLabel("")
         self.summary_lbl.setObjectName("section_t")
 
+        self.sort_lbl = QtWidgets.QLabel("SORT")
+        self.sort_lbl.setObjectName("section_t")
+
+        self._sort_combo = QtWidgets.QComboBox()
+        self._sort_combo.blockSignals(True)
+        self._sort_combo.addItem("Title A–Z", "title")
+        self._sort_combo.addItem("Title Z–A", "title_desc")
+        self._sort_combo.addItem("Newest Year", "year_desc")
+        self._sort_combo.addItem("Season Order", "season")
+        self._sort_combo.blockSignals(False)
+        self._sort_combo.setFixedHeight(34)
+        self._sort_combo.setObjectName("bulk_sort_combo")
+        self._sort_combo.setStyleSheet(
+            "QComboBox { padding: 4px 12px; font-size: 12px; font-weight: 700; "
+            "border-radius: 10px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); }"
+            "QComboBox::drop-down { border: none; }"
+        )
+        self._sort_combo.currentIndexChanged.connect(
+            lambda: on_sort_changed(self._sort_combo.currentData())
+        )
+
         # Single tri-state checkbox replacing the old Select All + Clear buttons
         self._select_cb = QtWidgets.QCheckBox("Select all")
         self._select_cb.setTristate(True)
@@ -83,6 +88,8 @@ class LibraryHeader(QtWidgets.QWidget):
         meta_l.addWidget(self.meta_lbl, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         meta_l.addWidget(self.summary_lbl, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         meta_l.addStretch()
+        meta_l.addWidget(self.sort_lbl, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
+        meta_l.addWidget(self._sort_combo, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         meta_l.addWidget(self._select_cb, 0, QtCore.Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(meta_w)
 
@@ -115,13 +122,13 @@ class LibraryHeader(QtWidgets.QWidget):
             button.style().unpolish(button)
             button.style().polish(button)
 
-    def set_counts(self, visible_count: int, total_count: int, selected_count: int):
-        # Show "14 videos" when unfiltered, "6 of 14 videos" when filtered
+    def set_counts(self, visible_count: int, total_count: int, selected_count: int, label_plural: str = "videos"):
+        singular = label_plural[:-1] if label_plural.endswith("s") else label_plural
         if visible_count == total_count:
-            self.meta_lbl.setText(f"{total_count} video{'s' if total_count != 1 else ''}")
+            noun = singular if total_count == 1 else label_plural
+            self.meta_lbl.setText(f"{total_count} {noun}")
         else:
-            self.meta_lbl.setText(f"{visible_count} of {total_count} videos")
-        # Selected count — only show when something is selected
+            self.meta_lbl.setText(f"{visible_count} of {total_count} {label_plural}")
         if selected_count > 0:
             self.summary_lbl.setText(f"{selected_count} selected")
         else:
