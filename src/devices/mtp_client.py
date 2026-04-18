@@ -427,8 +427,8 @@ def scan_mtp(device_ref: str, config: dict, log_callback, target_paths=None, sho
                     stack = [storage_item.Name] + [part for part in normalized.split("/") if part]
                     walk(subfolder, stack, 0, forced=True, allowed_exts=allowed_exts)
 
-                if any_found:
-                    continue
+                # if any_found:
+                #     continue
 
                 try:
                     app_hints = config.get("scan", {}).get("appPackageHints", ["com.community.mbox.ke"])
@@ -440,6 +440,19 @@ def scan_mtp(device_ref: str, config: dict, log_callback, target_paths=None, sho
                             any_found = True
                 except Exception:
                     pass
+
+                # Scan common folders in this storage
+                common_folders = ["Movies", "Videos", "Download", "DCIM", "Pictures"]
+                for folder_name in common_folders:
+                    try:
+                        subfolder = get_mtp_subfolder(storage_item.GetFolder, folder_name)
+                        if subfolder:
+                            log_callback(f"__PHASE__:1:1:Scanning common folder: {folder_name} in {storage_item.Name}")
+                            stack = [storage_item.Name, folder_name]
+                            walk(subfolder, stack, 0, forced=True, allowed_exts=allowed_exts)
+                            any_found = True
+                    except Exception:
+                        pass
 
             return any_found
 

@@ -111,6 +111,36 @@ class SettingsDialog(QtWidgets.QDialog):
         self.accept()
 
 # ── High-Density Folder Picker ──────────────────────────────────────────────
+class LoadFoldersThread(QtCore.QThread):
+    finished = QtCore.Signal(list)
+
+    def __init__(self, device_id, current_stack):
+        super().__init__()
+        self.device_id = device_id
+        self.current_stack = current_stack
+
+    def run(self):
+        pythoncom.CoInitialize()
+        try:
+            from ..devices.mtp_client import get_device_root, get_mtp_subfolder
+            root_item = get_device_root(self.device_id)
+            if not root_item:
+                self.finished.emit([])
+                return
+            path_str = "/".join(self.current_stack)
+            target = get_mtp_subfolder(root_item.GetFolder, path_str)
+            if target:
+                items = target.Items()
+                names = sorted([i.Name for i in items if i.IsFolder], key=str.lower)
+                self.finished.emit(names)
+            else:
+                self.finished.emit([])
+        except Exception:
+            self.finished.emit([])
+        finally:
+            pythoncom.CoUninitialize()
+
+
 class MtpFolderPickerDialog(QtWidgets.QDialog):
     def __init__(self, parent, device_name, device_id, config):
         super().__init__(parent)
@@ -175,31 +205,36 @@ class MtpFolderPickerDialog(QtWidgets.QDialog):
         actions.addWidget(self.add_btn); actions.addStretch(); actions.addWidget(cancel_btn); actions.addWidget(self.confirm_btn)
         root.addLayout(actions)
 
-        self._load_folder()
+        self._load_thread = LoadFoldersThread(self.device_id, self.current_stack)
+        self._load_thread.finished.connect(self._on_folders_loaded)
+        self._load_thread.start()
         self._refresh_chips()
 
-    def _load_folder(self):
-        self.list_widget.clear(); pythoncom.CoInitialize()
-        try:
-            from ..devices.mtp_client import get_device_root, get_mtp_subfolder
-            root_item = get_device_root(self.device_id)
-            if not root_item: self.status_lbl.setText("Phone not responding."); return
-            path_str = "/".join(self.current_stack); target = get_mtp_subfolder(root_item.GetFolder, path_str)
-            if target:
-                items = target.Items()
-                names = sorted([i.Name for i in items if i.IsFolder], key=str.lower)
-                for name in names:
-                    li = QtWidgets.QListWidgetItem(f"📁  {name}"); li.setData(QtCore.Qt.ItemDataRole.UserRole, name); self.list_widget.addItem(li)
-                self.status_lbl.setText(f"{self.list_widget.count()} folders found")
-            else: self.status_lbl.setText("Empty folder.")
-            self.breadcrumb.setText(" › ".join([self.device_name] + self.current_stack))
-            self.back_btn.setEnabled(bool(self.current_stack))
-            self._sync_selection_state()
-        finally: pythoncom.CoUninitialize()
+    def _on_folders_loaded(self, names):
+        self.list_widget.clear()
+        if names is None:
+            self.status_lbl.setText("Phone not responding.")
+            return
+        for name in names:
+            li = QtWidgets.QListWidgetItem(f"📁  {name}")
+            li.setData(QtCore.Qt.ItemDataRole.UserRole, name)
+            self.list_widget.addItem(li)
+        self.status_lbl.setText(f"{self.list_widget.count()} folders found")
+        self.breadcrumb.setText(" › ".join([self.device_name] + self.current_stack))
+        self.back_btn.setEnabled(bool(self.current_stack))
+        self._sync_selection_state()
 
-    def _drill_down(self, item): self.current_stack.append(item.data(QtCore.Qt.ItemDataRole.UserRole)); self._load_folder()
+    def _drill_down(self, item):
+        self.current_stack.append(item.data(QtCore.Qt.ItemDataRole.UserRole))
+        self._load_thread = LoadFoldersThread(self.device_id, self.current_stack)
+        self._load_thread.finished.connect(self._on_folders_loaded)
+        self._load_thread.start()
     def _drill_up(self):
-        if self.current_stack: self.current_stack.pop(); self._load_folder()
+        if self.current_stack:
+            self.current_stack.pop()
+            self._load_thread = LoadFoldersThread(self.device_id, self.current_stack)
+            self._load_thread.finished.connect(self._on_folders_loaded)
+            self._load_thread.start()
 
     def _add_selected(self):
         items = self.list_widget.selectedItems()
