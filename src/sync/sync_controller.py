@@ -287,6 +287,13 @@ class SyncWorker(QThread):
     def abort(self):
         self._is_aborted = True
 
+    def _cancelled(self, message: str = "Import stopped by user.") -> bool:
+        if not self._is_aborted:
+            return False
+        self.progress.emit(message)
+        self.cancelled.emit()
+        return True
+
     def run(self):
         try:
             if WIN32_AVAILABLE:
@@ -304,9 +311,7 @@ class SyncWorker(QThread):
             season_map = {}
 
             for idx, item in enumerate(items, start=1):
-                if self._is_aborted:
-                    self.progress.emit("Import stopped by user.")
-                    self.cancelled.emit()
+                if self._cancelled():
                     return
                 
                 self.progress.emit(f"[{idx}/{total}] Processing: {item['media'].destination_base}")
@@ -316,14 +321,22 @@ class SyncWorker(QThread):
                 # Copy Video
                 video_path = self.copy_entry(item["video"], stage_dir)
                 if not video_path:
+                    if self._cancelled():
+                        return
                     self.progress.emit(f"Failed to copy video for {item['media'].destination_base}. Skipping.")
                     continue
+
+                if self._cancelled("Stopping import after the current transfer step."):
+                    return
                     
                 final_video, reused_existing_video = finalize_video_target(video_path, item["destination"])
                 if reused_existing_video:
                     self.progress.emit(f"Using existing video -> {final_video}")
                 else:
                     self.progress.emit(f"Moved video to -> {final_video}")
+
+                if self._cancelled("Stopping import after the current transfer step."):
+                    return
 
                 # Track episode destinations for playlist generation
                 media = item["media"]
@@ -334,6 +347,8 @@ class SyncWorker(QThread):
                 # Copy Subtitles
                 for subtitle in item["subtitles"]:
                     sub_path = self.copy_entry(subtitle, stage_dir)
+                    if self._cancelled("Stopping import after the current transfer step."):
+                        return
                     if sub_path:
                         subtitle_target = subtitle_destination(final_video, subtitle["language"], subtitle["extension"])
                         final_sub, reused_existing_subtitle = finalize_subtitle_target(sub_path, subtitle_target)
@@ -341,11 +356,17 @@ class SyncWorker(QThread):
                             self.progress.emit(f"Using existing subtitle -> {final_sub}")
                         else:
                             self.progress.emit(f"Moved subtitle to -> {final_sub}")
+
+                if self._cancelled("Stopping import after the current transfer step."):
+                    return
             
             # Write M3U playlists for every season that was imported
             if season_map:
                 self.progress.emit("Writing season playlists...")
                 write_season_playlists(season_map)
+
+            if self._cancelled("Import stopped before final cleanup."):
+                return
 
             # Clean up empty staging dirs
             try:

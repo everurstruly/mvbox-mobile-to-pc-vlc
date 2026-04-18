@@ -6,6 +6,15 @@ VIDEO_PAT = re.compile(r"(.+?)[ ._-]+s(\d{1,2})[ ._-]*e(\d{1,3})(?:\b|[ ._-])", 
 EP_LABEL_PAT = re.compile(r"(.+?)[ ._-]+s(?:eason)?\s*(\d{1,2})[ ._-]*(?:e|ep|episode)\s*(\d{1,3})(?:\b|[ ._-])", re.I)
 ALT_EP_PAT = re.compile(r"(.+?)[ ._-]+(\d{1,2})x(\d{1,3})(?:\b|[ ._-])", re.I)
 YEAR_PAT = re.compile(r"\b(19\d{2}|20\d{2})\b")
+RELEASE_TOKEN_PAT = re.compile(
+    r"\b(?:"
+    r"\d{3,4}p|4k|8k|"
+    r"x264|x265|h264|h265|hevc|av1|hdr(?:10(?:\+)?)?|"
+    r"webrip|webdl|web-dl|bluray|blu-ray|brrip|dvdrip|hdrip|remux|"
+    r"aac2?\.?0|aac|dts(?:-hd)?|ac3|eac3|ddp5?\.?1|atmos"
+    r")\b",
+    re.I,
+)
 
 @dataclass
 class MediaInfo:
@@ -19,21 +28,18 @@ class MediaInfo:
     is_precise: bool = False
 
 def cleanup_name(value: str) -> str:
-    value = re.sub(r"\b(480p|720p|1080p|2160p|4k)\b", " ", value, flags=re.I)
-    value = re.sub(r"\b(x264|x265|h264|h265|hevc|hdr|webrip|webdl|web-dl|bluray|brrip|dvdrip)\b", " ", value, flags=re.I)
-    value = re.sub(r"\b(aac2?\.?0|aac|dts|ac3|eac3|ddp5?\.?1|atmos)\b", " ", value, flags=re.I)
+    value = RELEASE_TOKEN_PAT.sub(" ", value)
     value = re.sub(r"\[[^\]]+\]", " ", value)
+    value = re.sub(r"\((?:2160|1440|1080|900|720|576|540|480|360|240|144)p\)", " ", value, flags=re.I)
     value = re.sub(r"[._]+", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
     return value
 
 def cleanup_title(value: str) -> str:
-    # Strip quality/codec tokens that may have survived from the
-    # title portion of an episode filename (e.g. "The Boys 480p S03E02"
-    # → group(1) is "The Boys 480p" before this function is called).
-    value = re.sub(r"\b(480p|720p|1080p|2160p|4k)\b", " ", value, flags=re.I)
-    value = re.sub(r"\b(x264|x265|h264|h265|hevc|hdr|webrip|webdl|web-dl|bluray|brrip|dvdrip)\b", " ", value, flags=re.I)
-    value = re.sub(r"\b(aac2?\.?0|aac|dts|ac3|eac3|ddp5?\.?1|atmos)\b", " ", value, flags=re.I)
+    # Strip release/quality tokens that may have survived from the title
+    # portion of a filename so variants like "Movie 360p" stay one film.
+    value = RELEASE_TOKEN_PAT.sub(" ", value)
+    value = re.sub(r"\((?:2160|1440|1080|900|720|576|540|480|360|240|144)p\)", " ", value, flags=re.I)
     value = re.sub(r"[._]+", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
     parts = [p.capitalize() for p in value.split(" ") if p]

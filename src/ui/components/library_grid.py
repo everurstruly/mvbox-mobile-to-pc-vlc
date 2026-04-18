@@ -43,6 +43,10 @@ class MediaCard(QtWidgets.QFrame):
             season_count = len({item["media"].season for item in group_items if item["media"].season is not None})
             meta_text = f"SHOW • {season_count} SEASONS • {len(group_items)} EPISODES"
             title_text = media.title
+        elif group_items and media.type == "movie":
+            file_label = "FILE" if len(group_items) == 1 else "FILES"
+            meta_text = f"MOVIE • {len(group_items)} {file_label}"
+            title_text = media.destination_base if getattr(media, "year", None) else media.title
         elif group_items:
             meta_text = f"SEASON • {len(group_items)} EPISODES"
             title_text = f"{media.title}\nSeason {media.season:02d}"
@@ -177,7 +181,7 @@ class LibraryGrid(QtWidgets.QScrollArea):
         for index, item in enumerate(items):
             card = MediaCard(item, self._on_selection_changed)
             self.cards.append(card)
-            self.grid.addWidget(card, index // cols, index % cols, QtCore.Qt.AlignmentFlag.AlignCenter)
+            self.grid.addWidget(card, index // cols, index % cols, QtCore.Qt.AlignmentFlag.AlignTop | QtCore.Qt.AlignmentFlag.AlignLeft)
         self._on_selection_changed()
 
     def show_loading(self, label: str = "Updating library..."):

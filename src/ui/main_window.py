@@ -17,15 +17,15 @@ QWidget { font-family: 'Inter', 'Segoe UI Variable', sans-serif; color: #FFFFFF;
 #main_canvas { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #050818, stop:1 #020202); }
 
 #navbar { border-bottom: 1px solid rgba(255, 255, 255, 0.05); background: rgba(0,0,0,0.2); }
-#app_logo { font-size: 16px; font-weight: 900; color: #FFF; letter-spacing: -0.5px; }
+#app_logo { font-size: 16px; font-weight: 900; color: #FFF; }
 
 #step_dot { background-color: rgba(255, 255, 255, 0.1); border-radius: 4px; border: none; }
 #step_dot[active="true"] { background-color: #007AFF; }
 
 /* ── Typography ── */
-#hero_title { font-size: 48px; font-weight: 800; letter-spacing: -2px; color: #FFF; }
+#hero_title { font-size: 48px; font-weight: 800; color: #FFF; }
 #hero_sub { font-size: 16px; color: rgba(255, 255, 255, 0.4); }
-#section_t { font-size: 10px; font-weight: 900; color: rgba(255, 255, 255, 0.3); letter-spacing: 2px; text-transform: uppercase; }
+#section_t { font-size: 10px; font-weight: 900; color: rgba(255, 255, 255, 0.3); text-transform: uppercase; }
 
 /* ── Buttons ── */
 QPushButton#primary {
@@ -176,8 +176,8 @@ class MainWindow(QtWidgets.QMainWindow):
         cl = QtWidgets.QVBoxLayout(container); cl.setContentsMargins(SURFACE_INNER_X, 48, SURFACE_INNER_X, 48); cl.setSpacing(0)
         chosen_phone_lbl = QtWidgets.QLabel("CHOSEN PHONE"); chosen_phone_lbl.setObjectName("section_t"); cl.addWidget(chosen_phone_lbl); cl.addSpacing(12)
         device_row = QtWidgets.QHBoxLayout(); device_row.setSpacing(12)
-        self.device_combo = QtWidgets.QComboBox(); self.device_combo.setObjectName("device_picker"); self.device_combo.setFixedHeight(56); device_row.addWidget(self.device_combo, 1)
-        self.device_refresh_btn = QtWidgets.QPushButton("Reload"); self.device_refresh_btn.setObjectName("device_reload"); self.device_refresh_btn.setFixedHeight(56); self.device_refresh_btn.clicked.connect(self._manual_refresh_devices); device_row.addWidget(self.device_refresh_btn)
+        self.device_combo = QtWidgets.QComboBox(); self.device_combo.setObjectName("device_picker"); self.device_combo.setMinimumHeight(56); device_row.addWidget(self.device_combo, 1)
+        self.device_refresh_btn = QtWidgets.QPushButton("Reload"); self.device_refresh_btn.setObjectName("device_reload"); self.device_refresh_btn.setMinimumHeight(56); self.device_refresh_btn.clicked.connect(self._manual_refresh_devices); device_row.addWidget(self.device_refresh_btn)
         cl.addLayout(device_row)
         self.device_status_lbl = QtWidgets.QLabel(""); self.device_status_lbl.setObjectName("device_status"); cl.addSpacing(12); cl.addWidget(self.device_status_lbl)
         only_folders_lbl = QtWidgets.QLabel("ONLY THESE FOLDERS (OPTIONAL)"); only_folders_lbl.setObjectName("section_t"); cl.addSpacing(64); cl.addWidget(only_folders_lbl); cl.addSpacing(12)
@@ -246,6 +246,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "sync_worker") and self.sync_worker and self.sync_worker.isRunning():
             self.sync_worker.abort()
             self.primary_stop_btn.setText(" Stopping...")
+            self.primary_stop_btn.setEnabled(False)
             self._slots[1].setText("Stopping — finishing current file...")
             self._slots[2].setText("Will stop cleanly after this file completes.")
             return
@@ -296,13 +297,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._scan_subtitles = list(s)
         self._all_items = build_transfer_plan(v, s, self.config)
         for item in self._all_items: item["selected"] = item.get("selected", True)
+        self._reset_primary_stop_button()
         self._sort_key = "title"
         self._apply_sort()
         self._go(2, 2)
         QtCore.QTimer.singleShot(0, lambda: self._apply_filter("All"))
 
     def _on_scan_failed(self, msg):
-        self.primary_stop_btn.setEnabled(True)
+        self._reset_primary_stop_button()
         text = str(msg)
         if "allow file access" in text.lower() or "file transfer" in text.lower() or "cannot read its files" in text.lower():
             self._set_device_status(text, "danger")
@@ -343,7 +345,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_filter(self, f):
         self._af = f
         self.library_header.set_active_filter(f)
-        self._render_library_view(f, show_loading=True)
+        self._render_library_view(f, show_loading=False)
 
     def refresh_summary(self):
         visible_count = len(getattr(self.library_grid, "_items", [])) if hasattr(self, "library_grid") else 0
@@ -368,14 +370,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_sort_changed(self, sort_key: str):
         self._sort_key = sort_key
         self._apply_sort()
-        self._render_library_view(getattr(self, "_af", "All"), show_loading=True)
+        self._render_library_view(getattr(self, "_af", "All"), show_loading=False)
 
     def _start_import(self):
         selected = self.library_grid.selected_items()
         self._go(1, 3)
         self._scan_title.setText("Copying selected videos...")
-        self.primary_stop_btn.setText(" Stop Copy")
-        self.primary_stop_btn.setEnabled(True)
+        self._reset_primary_stop_button(copy_mode=True)
         self._ctrl_stack.setCurrentIndex(0)
         self._s_bar.setRange(0, 0)
         self._s_count.setText(f"{len(selected)} items queued")
@@ -451,18 +452,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._slots[1].setText(text[:48])
 
     def _on_sync_finished(self):
-        self.primary_stop_btn.setEnabled(True)
+        self._reset_primary_stop_button(copy_mode=True)
         self._go(3, 3)
 
     def _on_sync_cancelled(self):
         # User stopped intentionally. Return to library, no error dialog.
-        self.primary_stop_btn.setText(" Stop Copy")
-        self.primary_stop_btn.setEnabled(True)
+        self._reset_primary_stop_button(copy_mode=True)
         self._go(2, 2)
         self.refresh_summary()
 
     def _on_sync_failed(self, msg):
-        self.primary_stop_btn.setEnabled(True)
+        self._reset_primary_stop_button(copy_mode=True)
         QtWidgets.QMessageBox.critical(self, "Import Failed", str(msg))
         self._go(2, 2)
 
@@ -585,10 +585,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return self._view_cache[cache_key]
 
         if filter_name == "Movies":
-            items = [
-                item for item in self._all_items
-                if item["media"].type == "movie" and not self._is_series_like_movie(item)
-            ]
+            items = self._build_movie_items()
         elif filter_name == "Shows":
             items = self._build_show_items()
         elif filter_name == "Seasons":
@@ -599,6 +596,41 @@ class MainWindow(QtWidgets.QMainWindow):
         items = self._sorted_view_items(items, filter_name)
         self._view_cache[cache_key] = items
         return items
+
+    def _build_movie_items(self) -> list[dict]:
+        movie_groups = []
+        for item in self._all_items:
+            media = item["media"]
+            if media.type != "movie" or self._is_series_like_movie(item):
+                continue
+
+            group = next(
+                (
+                    existing
+                    for existing in movie_groups
+                    if self._same_movie_family(existing["media"], media)
+                ),
+                None,
+            )
+            if group is None:
+                movie_groups.append({
+                    "media": media,
+                    "group_items": [item],
+                    "selected": item.get("selected", True),
+                })
+                continue
+
+            group["group_items"].append(item)
+            group["media"] = self._preferred_movie_media(group["media"], media)
+
+        movie_items = []
+        for movie_group in movie_groups:
+            movie_group["selected"] = all(child.get("selected", True) for child in movie_group["group_items"])
+            if len(movie_group["group_items"]) == 1:
+                movie_items.append(movie_group["group_items"][0])
+            else:
+                movie_items.append(movie_group)
+        return movie_items
 
     def _build_season_items(self) -> list[dict]:
         season_map = {}
@@ -710,6 +742,26 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         return sorted(items, key=title_key)
 
+    def _same_movie_family(self, left, right) -> bool:
+        left_key = normalize_key(getattr(left, "title", ""))
+        right_key = normalize_key(getattr(right, "title", ""))
+        if not left_key or left_key != right_key:
+            return False
+        left_year = getattr(left, "year", None)
+        right_year = getattr(right, "year", None)
+        return left_year is None or right_year is None or left_year == right_year
+
+    def _preferred_movie_media(self, current, candidate):
+        current_year = getattr(current, "year", None)
+        candidate_year = getattr(candidate, "year", None)
+        if current_year is None and candidate_year is not None:
+            return candidate
+        if not getattr(current, "is_precise", False) and getattr(candidate, "is_precise", False):
+            return candidate
+        if len(getattr(candidate, "destination_base", "")) > len(getattr(current, "destination_base", "")):
+            return candidate
+        return current
+
     def _is_series_like_movie(self, item: dict) -> bool:
         media = item["media"]
         if media.type != "movie":
@@ -769,6 +821,10 @@ class MainWindow(QtWidgets.QMainWindow):
         singular, plural = noun_map.get(getattr(self, "_af", "All"), ("video", "videos"))
         noun = singular if selected_count == 1 else plural
         return f"Copy {selected_count} {noun} to this Device  →"
+
+    def _reset_primary_stop_button(self, copy_mode: bool = False):
+        self.primary_stop_btn.setText(" Stop Copy" if copy_mode else " Stop")
+        self.primary_stop_btn.setEnabled(True)
 
     def _set_device_status(self, text: str, state: str = "info"):
         if not hasattr(self, "device_status_lbl"):
